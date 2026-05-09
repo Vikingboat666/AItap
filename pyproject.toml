@@ -1,0 +1,137 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aitap"
+version = "0.1.0.dev0"
+description = "Zero-config CLI to discover, test, and iterate prompts in your AI codebase"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+authors = [{ name = "aitap contributors" }]
+requires-python = ">=3.10"
+keywords = ["llm", "prompt", "evaluation", "ai", "openai", "anthropic", "langchain"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Software Development :: Quality Assurance",
+]
+
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.7",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "tree-sitter>=0.21,<0.22",
+    "tree-sitter-python>=0.21,<0.22",
+    "pyyaml>=6.0",
+    "jinja2>=3.1",
+    "httpx>=0.27",
+    "gitpython>=3.1",
+]
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=0.25"]
+openai = ["openai>=1.30"]
+all = ["anthropic>=0.25", "openai>=1.30"]
+
+[project.urls]
+Homepage = "https://github.com/aitap/aitap"
+Repository = "https://github.com/aitap/aitap"
+Documentation = "https://aitap.github.io/aitap"
+Issues = "https://github.com/aitap/aitap/issues"
+
+[project.scripts]
+aitap = "aitap.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.1",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
+    "ruff>=0.4",
+    "pyright>=1.1.360",
+    "pre-commit>=3.7",
+    "httpx>=0.27",
+]
+docs = [
+    "mkdocs>=1.6",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.25",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aitap"]
+# TODO(M3): replace with hatch_build.py custom hook that runs `pnpm build`
+# in src/aitap/ui/ and copies dist/ into src/aitap/server/static/
+artifacts = ["src/aitap/server/static/**"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/aitap",
+    "README.md",
+    "LICENSE",
+    "pyproject.toml",
+]
+exclude = [
+    "src/aitap/server/static",
+    "src/aitap/ui/node_modules",
+    "src/aitap/ui/dist",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "B",        # flake8-bugbear
+    "UP",       # pyupgrade
+    "SIM",      # flake8-simplify
+    "RUF",      # ruff-specific
+]
+ignore = [
+    "E501",     # line-too-long handled by formatter
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["B", "SIM"]
+"tests/fixtures/**/*.py" = ["F", "B", "SIM", "UP"]  # fixtures are intentional sample code
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pyright]
+include = ["src/aitap"]
+exclude = ["**/node_modules", "**/__pycache__", "src/aitap/server/static", "src/aitap/ui"]
+pythonVersion = "3.10"
+typeCheckingMode = "strict"
+reportMissingImports = true
+reportMissingTypeStubs = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-ra --strict-markers"
+markers = [
+    "integration: integration tests requiring external resources",
+    "slow: slow tests",
+]
+
+[tool.coverage.run]
+source = ["src/aitap"]
+omit = ["*/tests/*", "*/ui/*"]

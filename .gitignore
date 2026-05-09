@@ -1,0 +1,88 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# uv
+.uv/
+
+# Testing
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# Type checkers
+.mypy_cache/
+.pyright/
+.ruff_cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node / frontend (within src/aitap/ui/)
+node_modules/
+.npm/
+.pnpm-store/
+.parcel-cache/
+.next/
+.nuxt/
+.cache/
+
+# Vite build output bundled into wheel
+src/aitap/server/static/
+
+# Docs build
+site/
+
+# aitap runtime data (consumer-side .aitap/ in user projects)
+# Note: aitap's own dev-time .aitap/ is gitignored too
+.aitap/db.sqlite
+.aitap/db.sqlite-journal
+.aitap/runs/
+
+# Audit mode temp clones
+.aitap/audit-cache/
+
+# Secrets
+.env
+.env.local
+*.pem
+*.key
