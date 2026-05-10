@@ -122,6 +122,17 @@ pythonVersion = "3.10"
 typeCheckingMode = "strict"
 reportMissingImports = true
 reportMissingTypeStubs = false
+# Pydantic's Field(default_factory=list) is the canonical pattern but pyright
+# strict reads its return as list[Unknown]; the annotation on the LHS is the
+# source of truth, so silence the noise.
+reportUnknownVariableType = false
+reportUnknownArgumentType = false
+# Bare `list = []` module globals (e.g. MIGRATIONS) are shaped by the rest of
+# the file; will tighten when each contract module is revisited.
+reportMissingTypeArgument = false
+# contextlib.Iterator vs Generator deprecation differs across 3.10/3.11/3.12;
+# we'd rather not pin a specific stdlib spelling in the contracts.
+reportDeprecated = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

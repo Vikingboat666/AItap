@@ -1,0 +1,60 @@
+name: Scanner false-positive / false-negative
+description: aitap scan missed a prompt, or flagged something that isn't one.
+title: "[scanner] "
+labels: ["scanner", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Scanner accuracy is a first-class concern. Concrete code snippets help us
+        add a regression fixture for whatever rule is misbehaving.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Type of scan issue
+      options:
+        - False positive (flagged something that isn't a prompt)
+        - False negative (missed a real prompt)
+        - Wrong metadata (model / params / role extracted incorrectly)
+        - Pipeline edge missed or wrongly drawn
+    validations:
+      required: true
+  - type: textarea
+    id: snippet
+    attributes:
+      label: Code snippet
+      description: A minimal piece of source code that triggers the bad behavior.
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should the scanner have produced?
+      description: e.g. "PromptSite at line 12 with model='gpt-4o-mini', role='system'"
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What did the scanner actually produce?
+      description: Paste the relevant `ScanResult` JSON or the terminal report excerpt.
+      render: shell
+    validations:
+      required: true
+  - type: dropdown
+    id: scan-mode
+    attributes:
+      label: Scan mode
+      options:
+        - L1 (rules only) — `aitap scan --rules-only`
+        - L2 (deep / LLM-assisted) — `aitap scan --deep`
+        - default
+    validations:
+      required: true
+  - type: input
+    id: aitap-version
+    attributes:
+      label: aitap version
+    validations:
+      required: true

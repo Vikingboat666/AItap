@@ -1,0 +1,43 @@
+name: Feature request
+description: Suggest a new capability or improvement.
+title: "[feature] "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What's the problem you're trying to solve?
+      description: Focus on the use case before the solution.
+      placeholder: When iterating on prompts in a multi-step pipeline, I have no way to...
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How might aitap solve this? Sketches, API ideas, references to similar tools all welcome.
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Which area does this touch?
+      multiple: true
+      options:
+        - Scanner (prompt discovery)
+        - Pipeline detection (DAG)
+        - Web playground / UI
+        - Self-iteration loop
+        - CLI ergonomics
+        - Storage / .aitap/ layout
+        - Audit mode
+        - Docs
+        - Other
+    validations:
+      required: true
