@@ -379,9 +379,9 @@ def _build_ts_parser(tsp: Any, language_cls: Any, parser_cls: Any) -> tuple[Any,
     branch signal. Instead we try the 0.21 path first (most likely given our
     pin) and fall back to 0.22 only when ``set_language`` doesn't exist.
 
-    Today's pin in pyproject.toml is ``tree-sitter>=0.21,<0.22`` so the
-    0.21 branch is what runs in practice; the 0.22 branch is here so a
-    future version bump doesn't silently break the unparseable-file fallback.
+    Today's pin in pyproject.toml is ``tree-sitter>=0.22,<0.26`` (0.22 is
+    the first release to ship a macOS arm64 wheel). The 0.21 branch is kept
+    here as a safety net in case future bumps re-expand the lower bound.
     """
     capsule = tsp.language()
     try:
