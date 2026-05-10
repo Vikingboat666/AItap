@@ -51,19 +51,19 @@ class Role(str, Enum):
 class TemplateKind(str, Enum):
     """How the prompt text is constructed in source."""
 
-    LITERAL = "literal"          # plain string
-    FSTRING = "fstring"          # Python f-string with interpolation
-    JINJA2 = "jinja2"            # jinja2 template
-    CONCAT = "concat"            # string concatenation across multiple lines
-    UNRESOLVED = "unresolved"    # too complex for L1 — needs L2
+    LITERAL = "literal"  # plain string
+    FSTRING = "fstring"  # Python f-string with interpolation
+    JINJA2 = "jinja2"  # jinja2 template
+    CONCAT = "concat"  # string concatenation across multiple lines
+    UNRESOLVED = "unresolved"  # too complex for L1 — needs L2
 
 
 class Confidence(str, Enum):
     """How sure the scanner is that this site is a real LLM call."""
 
-    HIGH = "high"        # known SDK signature match
-    MEDIUM = "medium"    # heuristic match (custom wrapper suspected)
-    LOW = "low"          # weak signal, likely needs L2 confirmation
+    HIGH = "high"  # known SDK signature match
+    MEDIUM = "medium"  # heuristic match (custom wrapper suspected)
+    LOW = "low"  # weak signal, likely needs L2 confirmation
 
 
 class CodeLocation(BaseModel):
@@ -130,11 +130,11 @@ class PromptSite(BaseModel):
 class EdgeKind(str, Enum):
     """What kind of data dependency this edge represents."""
 
-    VARIABLE = "variable"      # x = call_a(); call_b(x)
+    VARIABLE = "variable"  # x = call_a(); call_b(x)
     LANGCHAIN_PIPE = "lc_pipe"  # prompt | model | parser
-    LLAMAINDEX = "llamaindex"   # query engine chain
-    FUNCTION = "function"       # f() returns; g(f())
-    UNRESOLVED = "unresolved"   # detected but not confirmed (dashed in UI)
+    LLAMAINDEX = "llamaindex"  # query engine chain
+    FUNCTION = "function"  # f() returns; g(f())
+    UNRESOLVED = "unresolved"  # detected but not confirmed (dashed in UI)
 
 
 class PipelineNode(BaseModel):
@@ -168,7 +168,7 @@ class Pipeline(BaseModel):
     nodes: list[PipelineNode]
     edges: list[PipelineEdge]
     entry_points: list[str] = Field(default_factory=list)  # prompt_ids with no incoming edge
-    exit_points: list[str] = Field(default_factory=list)   # prompt_ids with no outgoing edge
+    exit_points: list[str] = Field(default_factory=list)  # prompt_ids with no outgoing edge
 
 
 class ProviderEvidence(BaseModel):

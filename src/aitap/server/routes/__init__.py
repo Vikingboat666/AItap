@@ -56,6 +56,7 @@ class _ApiModel(BaseModel):
 
 # ---------- Prompts ----------
 
+
 class PromptSummary(_ApiModel):
     id: str
     name: str
@@ -98,6 +99,7 @@ class PromptVersionResponse(_ApiModel):
 
 # ---------- Pipelines ----------
 
+
 class PipelineSummary(_ApiModel):
     id: str
     name: str
@@ -117,6 +119,7 @@ class PipelineDetailResponse(_ApiModel):
 
 
 # ---------- Runs ----------
+
 
 class DatasetCase(_ApiModel):
     """A single test case fed to a prompt or pipeline."""
@@ -168,6 +171,7 @@ class RunListResponse(_ApiModel):
 
 # ---------- Feedback / Iteration ----------
 
+
 class FeedbackCreate(_ApiModel):
     case_index: int
     rating: Literal[-1, 0, 1] | None = None
@@ -198,6 +202,7 @@ class IterateResponse(_ApiModel):
 
 # ---------- History ----------
 
+
 class HistoryEntry(_ApiModel):
     version: int
     note: str | None
@@ -217,6 +222,7 @@ class RollbackRequest(_ApiModel):
 
 
 # ---------- Settings ----------
+
 
 class CostEstimateResponse(_ApiModel):
     estimated_tokens: int
@@ -242,6 +248,7 @@ class SettingsUpdate(_ApiModel):
 
 
 # ---------- Scan trigger (also used by audit) ----------
+
 
 class ScanRequest(_ApiModel):
     path: str | None = None  # defaults to project_root
