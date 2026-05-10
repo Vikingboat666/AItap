@@ -86,3 +86,8 @@ site/
 .env.local
 *.pem
 *.key
+*token*.txt
+github_token*
+*.secret
+*.credentials
+credentials.json
