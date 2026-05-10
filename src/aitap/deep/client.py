@@ -132,7 +132,7 @@ class ProviderRateLimitError(ProviderError):
 ClientFactory = Callable[[str, str | None], LLMClient]
 
 
-class _ProviderProtocol(Protocol):
+class _ProviderProtocol(Protocol):  # pyright: ignore[reportUnusedClass]
     """Marker protocol — kept here so tests can introspect the registry."""
 
     def __call__(self, model: str, api_key: str | None) -> LLMClient: ...

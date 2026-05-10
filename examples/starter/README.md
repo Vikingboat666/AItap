@@ -36,14 +36,16 @@ and the Anthropic critic — plus the inferred two-node pipeline.
 examples/starter/
 ├── README.md
 ├── main.py                    # Entry point — wires FakeClient by default
-├── starter_app/
-│   ├── __init__.py
-│   ├── openai_summarizer.py   # Uses openai SDK call shape
-│   ├── anthropic_critic.py    # Uses anthropic SDK call shape
-│   └── mocks.py               # FakeOpenAI / FakeAnthropic for offline runs
-└── tests/
-    └── test_starter.py        # Smoke test — runs with FakeClient
+└── starter_app/
+    ├── __init__.py
+    ├── openai_summarizer.py   # Uses openai SDK call shape
+    ├── anthropic_critic.py    # Uses anthropic SDK call shape
+    └── mocks.py               # FakeOpenAI / FakeAnthropic for offline runs
 ```
+
+The repo-level smoke test for this example lives at
+`tests/integration/test_starter_example.py` and runs as part of
+`make test`.
 
 ## Using real providers
 

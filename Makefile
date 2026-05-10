@@ -42,5 +42,5 @@ docs-build: ## Build the docs into ./site
 build: ## Build sdist + wheel into ./dist
 	$(UV) build
 
-clean: ## Remove build / cache artifacts
+clean: ## Remove build / cache artifacts (POSIX only — Windows users delete manually)
 	rm -rf build dist *.egg-info site .pytest_cache .ruff_cache .mypy_cache .pyright htmlcov coverage.xml

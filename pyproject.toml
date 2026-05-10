@@ -133,8 +133,6 @@ reportMissingTypeArgument = false
 # contextlib.Iterator vs Generator deprecation differs across 3.10/3.11/3.12;
 # we'd rather not pin a specific stdlib spelling in the contracts.
 reportDeprecated = false
-# Marker protocols and registry-discovered classes can look unused statically.
-reportUnusedClass = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

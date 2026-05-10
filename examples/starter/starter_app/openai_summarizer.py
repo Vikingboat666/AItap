@@ -30,4 +30,6 @@ def summarize_email(client: OpenAI | Any, email_body: str) -> str:
         temperature=0.2,
         max_tokens=120,
     )
-    return response.choices[0].message.content
+    # `message.content` is Optional[str] on the real openai SDK (None for
+    # tool-call responses); coerce to "" to keep downstream typing clean.
+    return response.choices[0].message.content or ""

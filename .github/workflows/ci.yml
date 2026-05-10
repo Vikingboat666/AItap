@@ -25,6 +25,8 @@ jobs:
         uses: astral-sh/setup-uv@v3
         with:
           enable-cache: true
+          cache-dependency-glob: "**/uv.lock"
+          cache-suffix: lint
 
       - name: Set up Python
         run: uv python install 3.12
@@ -39,8 +41,12 @@ jobs:
         run: uv run ruff format --check .
 
   typecheck:
-    name: Typecheck (pyright)
-    runs-on: ubuntu-latest
+    name: Typecheck (pyright / py3.10 / ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -48,12 +54,14 @@ jobs:
         uses: astral-sh/setup-uv@v3
         with:
           enable-cache: true
+          cache-dependency-glob: "**/uv.lock"
+          cache-suffix: typecheck-${{ matrix.os }}
 
-      - name: Set up Python
-        run: uv python install 3.12
+      - name: Set up Python 3.10 (lower bound)
+        run: uv python install 3.10
 
       - name: Sync dev dependencies
-        run: uv sync --group dev
+        run: uv sync --group dev --python 3.10
 
       - name: pyright
         run: uv run pyright
@@ -73,6 +81,8 @@ jobs:
         uses: astral-sh/setup-uv@v3
         with:
           enable-cache: true
+          cache-dependency-glob: "**/uv.lock"
+          cache-suffix: test-${{ matrix.os }}-py${{ matrix.python-version }}
 
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
@@ -81,4 +91,26 @@ jobs:
         run: uv sync --group dev --python ${{ matrix.python-version }}
 
       - name: pytest
-        run: uv run pytest --cov=aitap --cov-report=xml --cov-report=term-missing
+        run: uv run pytest --cov=aitap --cov-report=term-missing
+
+  docs:
+    name: Docs (mkdocs build --strict)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: "**/uv.lock"
+          cache-suffix: docs
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Sync docs dependencies
+        run: uv sync --group docs
+
+      - name: mkdocs build --strict
+        run: uv run --group docs mkdocs build --strict

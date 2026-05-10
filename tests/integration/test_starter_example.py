@@ -12,24 +12,27 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 STARTER_DIR = REPO_ROOT / "examples" / "starter"
 
 
-@pytest.fixture(autouse=True)
-def _starter_on_syspath():
-    sys.path.insert(0, str(STARTER_DIR))
-    try:
-        yield
-    finally:
-        sys.path.remove(str(STARTER_DIR))
-        for name in list(sys.modules):
-            if name == "starter_app" or name.startswith("starter_app."):
-                del sys.modules[name]
+@pytest.fixture
+def starter_on_syspath(monkeypatch: pytest.MonkeyPatch):
+    """Put ``examples/starter/`` on ``sys.path`` for the duration of one test.
+
+    ``monkeypatch.syspath_prepend`` rolls back the path change automatically;
+    we additionally drop any ``starter_app*`` entries from ``sys.modules`` so
+    the test is reentrant under ``pytest-xdist`` and back-to-back invocations.
+    """
+    monkeypatch.syspath_prepend(str(STARTER_DIR))
+    yield
+    for name in [
+        m for m in list(sys.modules) if m == "starter_app" or m.startswith("starter_app.")
+    ]:
+        del sys.modules[name]
 
 
-def test_starter_main_runs_end_to_end():
+def test_starter_main_runs_end_to_end(starter_on_syspath: None) -> None:
     """Running ``main.run_pipeline`` should produce both stages of output."""
     main_path = STARTER_DIR / "main.py"
     assert main_path.exists(), "examples/starter/main.py is missing"
 
-    # Import as a module so we exercise run_pipeline directly.
     import importlib.util
 
     spec = importlib.util.spec_from_file_location("_starter_main", main_path)
@@ -44,7 +47,7 @@ def test_starter_main_runs_end_to_end():
     assert isinstance(result["critique"], str) and result["critique"]
 
 
-def test_starter_modules_importable():
+def test_starter_modules_importable(starter_on_syspath: None) -> None:
     """``starter_app`` and its submodules should import cleanly."""
     import starter_app
     from starter_app import anthropic_critic, openai_summarizer
