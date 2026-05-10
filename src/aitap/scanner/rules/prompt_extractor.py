@@ -179,16 +179,9 @@ def extract_messages(
     out: list[Message] = []
 
     if system_node is not None:
-        text, kind, variables = extract_template(system_node)
-        if text or kind is not TemplateKind.UNRESOLVED:
-            out.append(
-                Message(
-                    role=Role.SYSTEM,
-                    template_text=text,
-                    template_kind=kind,
-                    variables=variables,
-                )
-            )
+        sys_msg = _system_message_from(system_node)
+        if sys_msg is not None:
+            out.append(sys_msg)
 
     if messages_node is None and not out:
         return [Message(role=Role.USER, template_text="", template_kind=TemplateKind.UNRESOLVED)]
@@ -228,6 +221,75 @@ def extract_messages(
         return out
 
     return [Message(role=Role.USER, template_text="", template_kind=TemplateKind.UNRESOLVED)]
+
+
+def _system_message_from(node: ast.AST) -> Message | None:
+    """Build a SYSTEM :class:`Message` from an Anthropic ``system=`` value.
+
+    Anthropic accepts both shapes:
+
+    * ``system="You are concise."`` — a single string.
+    * ``system=[{"type": "text", "text": "You are…"}, …]`` — a list of
+      content blocks (used when callers want cache_control on parts of
+      the system prompt).
+
+    We concatenate text-block contents with ``\\n\\n`` so the extracted
+    template still reflects the prompt the user wrote. Non-text blocks
+    (image, document) leave a placeholder so reviewers can see them.
+    """
+    if isinstance(node, ast.List):
+        pieces: list[str] = []
+        all_variables: list[TemplateVariable] = []
+        seen_var_names: set[str] = set()
+        any_resolved = False
+        for item in node.elts:
+            if not isinstance(item, ast.Dict):
+                pieces.append("{<expr>}")
+                continue
+            text_value: ast.AST | None = None
+            block_type: str | None = None
+            for key, value in zip(item.keys, item.values, strict=False):
+                if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
+                    continue
+                if key.value == "type" and isinstance(value, ast.Constant):
+                    block_type = str(value.value)
+                elif key.value == "text":
+                    text_value = value
+            if block_type and block_type != "text":
+                pieces.append(f"<{block_type}>")
+                continue
+            text, kind, variables = extract_template(text_value)
+            if kind is not TemplateKind.UNRESOLVED:
+                any_resolved = True
+            pieces.append(text or "{<expr>}")
+            for v in variables:
+                if v.name not in seen_var_names:
+                    all_variables.append(v)
+                    seen_var_names.add(v.name)
+        if not pieces:
+            return None
+        joined = "\n\n".join(pieces)
+        kind = (
+            TemplateKind.LITERAL
+            if any_resolved and not all_variables
+            else (TemplateKind.FSTRING if all_variables else TemplateKind.UNRESOLVED)
+        )
+        return Message(
+            role=Role.SYSTEM,
+            template_text=joined,
+            template_kind=kind,
+            variables=all_variables,
+        )
+
+    text, kind, variables = extract_template(node)
+    if not text and kind is TemplateKind.UNRESOLVED:
+        return None
+    return Message(
+        role=Role.SYSTEM,
+        template_text=text,
+        template_kind=kind,
+        variables=variables,
+    )
 
 
 def _message_from_dict(node: ast.AST) -> Message | None:
@@ -278,8 +340,15 @@ def extract_call_parameters(call: ast.Call) -> CallParameters:
             model = _as_str(kw.value)
         elif kw.arg == "temperature":
             temperature = _as_float(kw.value)
-        elif kw.arg == "max_tokens" or kw.arg == "max_output_tokens":
+        elif kw.arg == "max_tokens":
             max_tokens = _as_int(kw.value)
+        elif kw.arg == "max_output_tokens":
+            # OpenAI's responses API spelling. Map to the canonical
+            # max_tokens slot but keep the raw kwarg name in `extra` so a
+            # downstream that reconstructs an SDK call can pick the right
+            # spelling.
+            max_tokens = _as_int(kw.value)
+            extra["max_output_tokens"] = _stringify_value(kw.value)
         elif kw.arg == "top_p":
             top_p = _as_float(kw.value)
         elif kw.arg == "response_format":

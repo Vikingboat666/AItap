@@ -105,3 +105,29 @@ def test_module_main_renders_markdown_when_no_json() -> None:
     proc = _run_module(str(OPENAI_BASIC))
     assert "aitap scan" in proc.stdout
     assert "Prompts" in proc.stdout
+
+
+def test_module_main_emits_no_runtime_warnings() -> None:
+    """Running with -W error::RuntimeWarning catches the runpy double-import
+    warning that was present before scanner/__init__.py was made lazy."""
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-W",
+            "error::RuntimeWarning",
+            "-m",
+            "aitap.scanner.engine",
+            str(OPENAI_BASIC),
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+    )
+    assert proc.returncode == 0, (
+        f"runpy raised RuntimeWarning under -W error\nSTDERR:\n{proc.stderr}"
+    )

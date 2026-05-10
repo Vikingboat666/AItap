@@ -100,9 +100,28 @@ def scan_python_file(
             warnings.append(ts_warning)
         return sites, warnings
 
-    visitor = _PromptSiteVisitor(ctx)
+    file_imports = _collect_imports(tree)
+    visitor = _PromptSiteVisitor(ctx, file_imports=file_imports)
     visitor.visit(tree)
     return visitor.sites, visitor.warnings
+
+
+def _collect_imports(tree: ast.Module) -> frozenset[str]:
+    """Walk *tree* once and return the set of top-level package names imported.
+
+    Used by the call-site matcher to anchor short-suffix SDK rules: a file
+    whose ``messages.create`` call lives without ``import anthropic`` (or any
+    transitive ``from anthropic import ...``) is almost certainly not the
+    Anthropic SDK and should not be matched.
+    """
+    out: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                out.add(alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            out.add(node.module.split(".")[0])
+    return frozenset(out)
 
 
 # ---------------------------------------------------------------------------
@@ -115,9 +134,10 @@ class _PromptSiteVisitor(ast.NodeVisitor):
     one :class:`PromptSite` for every ``ast.Call`` matched by
     :mod:`aitap.scanner.rules.sdk_calls`."""
 
-    def __init__(self, ctx: _ScanContext) -> None:
+    def __init__(self, ctx: _ScanContext, *, file_imports: frozenset[str]) -> None:
         self._ctx = ctx
         self._scope_stack: list[str] = []
+        self._file_imports = file_imports
         self.sites: list[PromptSite] = []
         self.warnings: list[ScanWarning] = []
 
@@ -140,7 +160,7 @@ class _PromptSiteVisitor(ast.NodeVisitor):
         self._scope_stack.pop()
 
     def visit_Call(self, node: ast.Call) -> None:
-        rule = sdk_calls.match_call(node)
+        rule = sdk_calls.match_call(node, file_imports=self._file_imports)
         if rule is not None:
             site = self._build_site(node, rule)
             if site is not None:
@@ -183,7 +203,12 @@ class _PromptSiteVisitor(ast.NodeVisitor):
         )
         confidence = _confidence_for(call, messages)
         name = self._derive_name(rule)
-        site_id = _stable_site_id(self._ctx.file_relpath, location.line_start, messages)
+        site_id = _stable_site_id(
+            self._ctx.file_relpath,
+            location.line_start,
+            location.col_start,
+            messages,
+        )
 
         return PromptSite(
             id=site_id,
@@ -228,9 +253,17 @@ def _slugify(text: str) -> str:
     return cleaned or "anonymous"
 
 
-def _stable_site_id(relpath: str, line: int, messages: list[Message]) -> str:
+def _stable_site_id(relpath: str, line: int, col: int | None, messages: list[Message]) -> str:
+    """Hash file/line/col + message texts into a 12-char id.
+
+    Including ``col`` keeps two prompt sites that share a starting line
+    distinct (e.g. ``client.messages.create(messages=client.messages.create(...))``,
+    or two ``client.chat.completions.create(...)`` calls inlined into a
+    list comprehension on the same line).
+    """
     fingerprint = "\n".join(m.template_text for m in messages)
-    digest = hashlib.sha1(f"{relpath}:{line}:{fingerprint}".encode())
+    col_part = "?" if col is None else str(col)
+    digest = hashlib.sha1(f"{relpath}:{line}:{col_part}:{fingerprint}".encode())
     return digest.hexdigest()[:12]
 
 
@@ -275,9 +308,7 @@ def _tree_sitter_fallback(
         )
 
     try:
-        language = Language(tsp.language(), "python")
-        parser = Parser()
-        parser.set_language(language)
+        language, parser = _build_ts_parser(tsp, Language, Parser)
         tree = parser.parse(ctx.source.encode("utf-8", errors="replace"))
     except Exception as e:  # pragma: no cover — defensive against ts errors
         return (
@@ -288,6 +319,7 @@ def _tree_sitter_fallback(
                 location=CodeLocation(file=ctx.file_relpath, line_start=1, line_end=1),
             ),
         )
+    del language  # only the parser is needed beyond this point
 
     sites: list[PromptSite] = []
     root: Any = tree.root_node
@@ -315,7 +347,7 @@ def _tree_sitter_fallback(
             template_text="",
             template_kind=TemplateKind.UNRESOLVED,
         )
-        site_id = _stable_site_id(ctx.file_relpath, line_start, [message])
+        site_id = _stable_site_id(ctx.file_relpath, line_start, int(start_point[1]), [message])
         sites.append(
             PromptSite(
                 id=site_id,
@@ -328,6 +360,41 @@ def _tree_sitter_fallback(
             )
         )
     return sites, None
+
+
+def _build_ts_parser(tsp: Any, language_cls: Any, parser_cls: Any) -> tuple[Any, Any]:
+    """Construct a tree-sitter Parser bound to the Python grammar.
+
+    The tree-sitter Python bindings have shifted constructor shapes across
+    minor versions:
+
+    * 0.21.x — ``Language(capsule, name)`` two-arg, ``Parser()`` then
+      ``parser.set_language(language)``.
+    * 0.22.x — ``Language(capsule)`` one-arg, ``Parser(language)`` direct;
+      ``set_language`` removed.
+
+    On 0.21.x the bindings *also accept* ``Parser(language)`` at construction
+    time but return an unbound parser whose later ``parse()`` call raises
+    ``ValueError: Parsing failed`` — so we cannot rely on TypeError as the
+    branch signal. Instead we try the 0.21 path first (most likely given our
+    pin) and fall back to 0.22 only when ``set_language`` doesn't exist.
+
+    Today's pin in pyproject.toml is ``tree-sitter>=0.21,<0.22`` so the
+    0.21 branch is what runs in practice; the 0.22 branch is here so a
+    future version bump doesn't silently break the unparseable-file fallback.
+    """
+    capsule = tsp.language()
+    try:
+        language = language_cls(capsule, "python")
+    except TypeError:
+        # 0.22+ removed the name argument.
+        language = language_cls(capsule)
+    parser = parser_cls()
+    set_language = getattr(parser, "set_language", None)
+    if callable(set_language):
+        set_language(language)  # 0.21 path
+        return language, parser
+    return language, parser_cls(language)  # 0.22 path
 
 
 def _iter_call_nodes(root: Any) -> list[Any]:

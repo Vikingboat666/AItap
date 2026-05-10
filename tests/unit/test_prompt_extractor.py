@@ -119,3 +119,33 @@ def test_extract_call_parameters_skips_messages_in_extra() -> None:
     call = _call("c.x(model='m', messages=[], system='s', input='hi', prompt='p')")
     params = extract_call_parameters(call)
     assert params.extra == {}
+
+
+def test_extract_call_parameters_max_output_tokens_preserved() -> None:
+    """OpenAI responses API uses max_output_tokens; we map it to max_tokens
+    for the canonical slot but keep the raw kwarg name in extra so a caller
+    that rebuilds an SDK invocation knows which spelling to use."""
+    call = _call("c.x(model='m', max_output_tokens=512)")
+    params = extract_call_parameters(call)
+    assert params.max_tokens == 512
+    assert params.extra.get("max_output_tokens") == "512"
+
+
+def test_extract_messages_with_anthropic_system_blocks() -> None:
+    """Anthropic's system= can be a list of {type:text, text:...} content
+    blocks (used when callers need cache_control on prefix portions)."""
+    messages_node = _expr("[{'role': 'user', 'content': 'q'}]")
+    system_node = _expr(
+        "[{'type': 'text', 'text': 'You are concise.'}, {'type': 'text', 'text': 'Cite sources.'}]"
+    )
+    messages = extract_messages(messages_node, system_node=system_node)
+    assert messages[0].role is Role.SYSTEM
+    assert "You are concise." in messages[0].template_text
+    assert "Cite sources." in messages[0].template_text
+
+
+def test_extract_messages_anthropic_system_block_unknown_type_placeholder() -> None:
+    system_node = _expr("[{'type': 'image', 'source': {}}]")
+    messages = extract_messages(_expr("[]"), system_node=system_node)
+    assert messages[0].role is Role.SYSTEM
+    assert "<image>" in messages[0].template_text

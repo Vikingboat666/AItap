@@ -44,7 +44,7 @@ def test_match_module_level_openai_chat() -> None:
 
 def test_match_anthropic_messages_create() -> None:
     call = _first_call("c.messages.create(model='m', messages=[{'role':'user','content':'q'}])")
-    rule = match_call(call)
+    rule = match_call(call, file_imports=frozenset({"anthropic"}))
     assert rule is not None
     assert rule.provider is Provider.ANTHROPIC
     assert rule.system_kw == "system"
@@ -52,10 +52,41 @@ def test_match_anthropic_messages_create() -> None:
 
 def test_match_responses_api() -> None:
     call = _first_call("client.responses.create(model='m', input='hi')")
-    rule = match_call(call)
+    rule = match_call(call, file_imports=frozenset({"openai"}))
     assert rule is not None
     assert rule.provider is Provider.OPENAI
     assert rule.messages_kw == "input"
+
+
+def test_short_path_rules_skip_when_import_missing() -> None:
+    """metrics.completions.create() in a file without 'import openai' must
+    NOT match — that's the headline regression from review #1."""
+    call = _first_call("metrics.completions.create(prompt='increment')")
+    assert match_call(call, file_imports=frozenset()) is None
+    # ...but with openai imported, the rule fires.
+    rule = match_call(call, file_imports=frozenset({"openai"}))
+    assert rule is not None
+    assert rule.provider is Provider.OPENAI
+
+
+def test_anthropic_messages_skipped_when_anthropic_not_imported() -> None:
+    call = _first_call("db.session.messages.create(messages=[{'role':'user','content':'q'}])")
+    assert match_call(call, file_imports=frozenset({"sqlalchemy"})) is None
+    rule = match_call(call, file_imports=frozenset({"anthropic"}))
+    assert rule is not None
+    assert rule.provider is Provider.ANTHROPIC
+
+
+def test_3_token_openai_chat_path_does_not_require_import_anchor() -> None:
+    """chat.completions.create is specific enough that we accept it without
+    requiring 'import openai' — wrappers that re-export the client through a
+    custom path still resolve."""
+    call = _first_call(
+        "wrapper.chat.completions.create(model='m', messages=[{'role':'user','content':'hi'}])"
+    )
+    rule = match_call(call, file_imports=frozenset())
+    assert rule is not None
+    assert rule.provider is Provider.OPENAI
 
 
 def test_no_match_unrelated_call() -> None:

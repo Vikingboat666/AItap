@@ -202,18 +202,18 @@ def main_json(argv: list[str] | None = None) -> str:
     return scan_project(args.path).model_dump_json(indent=2)
 
 
-if __name__ == "__main__":  # pragma: no cover — exercised via subprocess in tests
-    raise SystemExit(_main())
+def to_json(result: ScanResult, *, indent: int = 2) -> str:
+    """Serialize a :class:`ScanResult` to JSON via pydantic."""
+    return result.model_dump_json(indent=indent)
 
 
-# Re-export for easier test imports.
 __all__ = [
     "DEFAULT_IGNORE_DIRS",
     "main_json",
     "scan_project",
+    "to_json",
 ]
 
 
-def to_json(result: ScanResult, *, indent: int = 2) -> str:
-    """Serialize a :class:`ScanResult` to JSON via pydantic."""
-    return result.model_dump_json(indent=indent)
+if __name__ == "__main__":  # pragma: no cover — exercised via subprocess in tests
+    raise SystemExit(_main())

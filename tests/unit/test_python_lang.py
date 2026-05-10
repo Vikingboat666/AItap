@@ -168,3 +168,41 @@ client.chat.completions.create(model="m", messages=[{"role": "user", "content": 
     p2 = _write(tmp_path, "a.py", body)
     sites2, _ = scan_python_file(p2, tmp_path)
     assert sites1[0].id == sites2[0].id
+
+
+def test_two_calls_on_same_line_get_distinct_ids(tmp_path: Path) -> None:
+    """Same-line nested / list-comprehension calls must produce distinct ids
+    — the col_start in the fingerprint disambiguates them."""
+    src = _write(
+        tmp_path,
+        "twin.py",
+        """\
+from openai import OpenAI
+client = OpenAI()
+def call(x): return [client.chat.completions.create(model="m", messages=[{"role":"user","content":"a"}]), client.chat.completions.create(model="m", messages=[{"role":"user","content":"b"}])]
+""",
+    )
+    sites, _ = scan_python_file(src, tmp_path)
+    assert len(sites) == 2
+    assert sites[0].id != sites[1].id
+
+
+def test_metrics_completions_create_is_not_a_false_positive(tmp_path: Path) -> None:
+    """Headline regression for review #1: a file without 'import openai' that
+    happens to call something like `metrics.completions.create(...)` should
+    NOT produce a prompt site."""
+    src = _write(
+        tmp_path,
+        "metrics.py",
+        """\
+import statsd
+metrics = statsd.StatsClient()
+
+
+def emit():
+    metrics.completions.create(prompt="signup")
+""",
+    )
+    sites, warnings = scan_python_file(src, tmp_path)
+    assert sites == []
+    assert warnings == []

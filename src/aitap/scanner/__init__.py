@@ -9,16 +9,25 @@ Public surface (consumed by other worktrees):
   store/audit packages).
 - :func:`build_markdown` — render a :class:`ScanResult` as Markdown text.
 - :func:`render_terminal_report` — pretty-print to a rich console.
+
+Imports of the engine / report modules are deferred to first attribute
+access (via :func:`__getattr__`) so that ``python -m aitap.scanner.engine``
+does not double-import the engine module — runpy would otherwise emit a
+``RuntimeWarning`` because the package init eagerly loaded the same module
+that runpy is about to execute as ``__main__``.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import typer
 
-from aitap.scanner.engine import DEFAULT_IGNORE_DIRS, scan_project, to_json
-from aitap.scanner.report import build_markdown, render_terminal_report
+if TYPE_CHECKING:
+    from aitap.scanner.engine import DEFAULT_IGNORE_DIRS, scan_project, to_json
+    from aitap.scanner.models import ScanResult
+    from aitap.scanner.report import build_markdown, render_terminal_report
 
 __all__ = [
     "DEFAULT_IGNORE_DIRS",
@@ -29,6 +38,25 @@ __all__ = [
     "scan_project",
     "to_json",
 ]
+
+
+_ENGINE_NAMES = {"DEFAULT_IGNORE_DIRS", "scan_project", "to_json"}
+_REPORT_NAMES = {"build_markdown", "render_terminal_report"}
+
+
+def __getattr__(name: str) -> Any:
+    """Lazy re-exports for the engine/report modules.
+
+    See module docstring for why this is lazy."""
+    if name in _ENGINE_NAMES:
+        from aitap.scanner import engine
+
+        return getattr(engine, name)
+    if name in _REPORT_NAMES:
+        from aitap.scanner import report
+
+        return getattr(report, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def scan_command(
@@ -67,13 +95,18 @@ def scan_command(
             err=True,
         )
 
-    result = scan_project(path)
+    # Deferred import — see module docstring for why __init__ stays lazy.
+    from aitap.scanner.engine import scan_project as _scan_project
+    from aitap.scanner.engine import to_json as _to_json
+    from aitap.scanner.report import render_terminal_report as _render
+
+    result: ScanResult = _scan_project(path)
 
     if json_output:
-        typer.echo(to_json(result))
+        typer.echo(_to_json(result))
         return
 
-    render_terminal_report(result)
+    _render(result)
 
 
 def make_scan_command() -> typer.Typer:
