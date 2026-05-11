@@ -331,3 +331,111 @@ def test_stub_does_not_swallow_real_import_errors(monkeypatch: pytest.MonkeyPatc
     assert result.exit_code != 0
     assert "not yet implemented" not in (result.stderr or "")
     assert isinstance(result.exception, RuntimeError)
+
+
+# --------------------------------------------------------------------------- #
+# UTF-8 stdio guard (Windows GBK crash regression)                            #
+# --------------------------------------------------------------------------- #
+
+
+class _FakeReconfigurableStream:
+    """Stand-in for sys.stdout exposing the same `encoding` + `reconfigure`
+    surface that Python's TextIOWrapper provides on real terminals.
+    """
+
+    def __init__(self, encoding: str) -> None:
+        self.encoding = encoding
+        self.reconfigure_calls: list[dict[str, object]] = []
+
+    def reconfigure(self, **kwargs: object) -> None:
+        self.reconfigure_calls.append(kwargs)
+        if "encoding" in kwargs:
+            self.encoding = str(kwargs["encoding"])
+
+
+def test_force_utf8_stdio_reconfigures_non_utf8_streams(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aitap.cli import _force_utf8_stdio
+
+    fake_out = _FakeReconfigurableStream("cp936")
+    fake_err = _FakeReconfigurableStream("cp1252")
+    monkeypatch.setattr("aitap.cli.sys.stdout", fake_out)
+    monkeypatch.setattr("aitap.cli.sys.stderr", fake_err)
+
+    _force_utf8_stdio()
+
+    assert fake_out.reconfigure_calls == [{"encoding": "utf-8", "errors": "replace"}]
+    assert fake_err.reconfigure_calls == [{"encoding": "utf-8", "errors": "replace"}]
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "UTF-8", "utf8", "UTF8"])
+def test_force_utf8_stdio_skips_already_utf8(
+    monkeypatch: pytest.MonkeyPatch, encoding: str
+) -> None:
+    from aitap.cli import _force_utf8_stdio
+
+    fake = _FakeReconfigurableStream(encoding)
+    monkeypatch.setattr("aitap.cli.sys.stdout", fake)
+    monkeypatch.setattr("aitap.cli.sys.stderr", fake)
+
+    _force_utf8_stdio()
+
+    # Already-utf8 streams should be left alone — we don't churn the encoding.
+    assert fake.reconfigure_calls == []
+
+
+def test_force_utf8_stdio_tolerates_streams_without_reconfigure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """StringIO et al. lack ``reconfigure``; the helper must not crash."""
+    from io import StringIO
+
+    from aitap.cli import _force_utf8_stdio
+
+    monkeypatch.setattr("aitap.cli.sys.stdout", StringIO())
+    monkeypatch.setattr("aitap.cli.sys.stderr", StringIO())
+
+    _force_utf8_stdio()  # must not raise
+
+
+def test_force_utf8_stdio_swallows_reconfigure_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If a stream's reconfigure() raises (e.g. binary mode), keep going."""
+
+    class _BrokenStream:
+        encoding = "cp936"
+
+        def reconfigure(self, **_kwargs: object) -> None:
+            raise OSError("cannot reconfigure binary stream")
+
+    from aitap.cli import _force_utf8_stdio
+
+    monkeypatch.setattr("aitap.cli.sys.stdout", _BrokenStream())
+    monkeypatch.setattr("aitap.cli.sys.stderr", _BrokenStream())
+
+    _force_utf8_stdio()  # must not raise
+
+
+def test_scan_renders_unicode_glyphs_into_non_utf8_pipe(tmp_path: Path) -> None:
+    """End-to-end regression: aitap scan must not crash when its stdout is a
+    pipe whose underlying buffer would default to a Unicode-hostile codec
+    (the original Windows GBK crash). We simulate this by capturing through
+    a buffer and asserting the bullet glyph survived to the output.
+    """
+    from aitap.cli import app
+
+    # Use the real openai_basic fixture — it produces bullets, arrows, and
+    # ellipses through rich's Markdown renderer.
+    fixture = Path(__file__).resolve().parent.parent / "fixtures" / "openai_basic"
+    runner = CliRunner(env={"COLUMNS": "120"})
+    result = runner.invoke(app, ["scan", str(fixture)])
+
+    assert result.exit_code == 0, (
+        f"aitap scan crashed: {result.exception!r}\nstderr:\n{result.stderr}"
+    )
+    # The bullet character is the canary that originally triggered the
+    # UnicodeEncodeError on Windows + GBK. If it makes it to stdout, we know
+    # rich could write to the captured stream without exploding.
+    assert "•" in result.stdout

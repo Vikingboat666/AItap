@@ -20,6 +20,7 @@ invariant and skip re-validating.
 
 from __future__ import annotations
 
+import contextlib
 import sys
 from importlib import import_module
 from importlib.util import find_spec
@@ -40,6 +41,36 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+
+
+def _force_utf8_stdio() -> None:
+    """Reconfigure stdout/stderr to UTF-8 before any console renders.
+
+    Windows defaults stdout to the OS code page (often cp936 / GBK in CN
+    locales) and rich crashes the moment it tries to render a bullet,
+    arrow, ellipsis, or any other glyph outside that page. Forcing UTF-8
+    with errors='replace' keeps output alive even on terminals that can't
+    actually display every glyph — better a `?` than an aborted command.
+
+    No-op when:
+      - the stream lacks ``reconfigure`` (already replaced by a test runner
+        capturing into StringIO, or a bytes stream);
+      - the stream is already UTF-8.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        encoding = (getattr(stream, "encoding", "") or "").lower().replace("-", "")
+        if encoding == "utf8":
+            continue
+        # Stream may be in a mode that forbids reconfigure (e.g., bytes wrapper);
+        # silently leave it alone rather than abort startup.
+        with contextlib.suppress(ValueError, OSError):
+            reconfigure(encoding="utf-8", errors="replace")
+
+
+_force_utf8_stdio()
 
 
 def _console_width(stream: IO[str]) -> int | None:
