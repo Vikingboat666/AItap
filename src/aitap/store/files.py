@@ -70,8 +70,23 @@ def _dump_yaml(data: dict[str, object]) -> str:
 # --------------------------------------------------------------------------- #
 
 
+# Length of the id suffix appended to filenames. PromptSite.id is a content
+# hash; the first 8 chars give 16M-collision-resistant uniqueness which is
+# more than enough for any one project, and they keep filenames readable
+# (workflow.84af73be.prompt.yaml).
+_ID_SUFFIX_LEN = 8
+
+
 def prompt_path(prompts_dir: Path, site: PromptSite) -> Path:
-    return prompts_dir / f"{_safe_filename(site.name)}.prompt.yaml"
+    """Return the YAML path for *site*.
+
+    The filename embeds a short prefix of ``site.id`` so two PromptSites
+    that derive the same human-friendly name (a common case: multiple LLM
+    calls inside one wrapper function) don't overwrite each other on disk.
+    Without this disambiguation the SQLite store would carry both rows
+    while the YAML mirror silently lost all but the last write.
+    """
+    return prompts_dir / f"{_safe_filename(site.name)}.{site.id[:_ID_SUFFIX_LEN]}.prompt.yaml"
 
 
 def write_prompt(prompts_dir: Path, site: PromptSite) -> Path:
@@ -106,7 +121,15 @@ def list_prompts(prompts_dir: Path) -> list[Path]:
 
 
 def pipeline_path(pipelines_dir: Path, pipeline: Pipeline) -> Path:
-    return pipelines_dir / f"{_safe_filename(pipeline.name)}.pipeline.yaml"
+    """Return the YAML path for *pipeline*.
+
+    Same id-suffix discipline as :func:`prompt_path` — pipeline names are
+    derived from anchor prompt names and can collide for similar reasons.
+    """
+    return (
+        pipelines_dir
+        / f"{_safe_filename(pipeline.name)}.{pipeline.id[:_ID_SUFFIX_LEN]}.pipeline.yaml"
+    )
 
 
 def write_pipeline(pipelines_dir: Path, pipeline: Pipeline) -> Path:

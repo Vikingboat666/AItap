@@ -71,7 +71,9 @@ def test_write_prompt_round_trip(prompts_dir: Path) -> None:
     site = _site()
     path = files.write_prompt(prompts_dir, site)
     assert path.exists()
-    assert path.name == "summarize_email.prompt.yaml"
+    # Filename = <safe_name>.<id_short>.prompt.yaml — the id suffix is what
+    # disambiguates same-named prompts (see Bug #1 regression).
+    assert path.name == "summarize_email.abc123.prompt.yaml"
 
     loaded = files.read_prompt(path)
     assert loaded == site
@@ -83,7 +85,33 @@ def test_write_prompt_unsafe_name_is_sanitised(prompts_dir: Path) -> None:
     site = _site(name="../etc/passwd")
     path = files.write_prompt(prompts_dir, site)
     assert path.parent == prompts_dir  # NEVER escape the target dir
-    assert path.name == "etc-passwd.prompt.yaml"
+    assert path.name == "etc-passwd.abc123.prompt.yaml"
+
+
+def test_write_prompt_disambiguates_same_named_sites(prompts_dir: Path) -> None:
+    """Regression: integration testing showed two PromptSites that derive
+    the same name (multiple LLM calls inside one wrapper function — very
+    common) used to overwrite each other on disk because the YAML filename
+    was just the name. Now the id-suffix keeps them distinct.
+    """
+    site_a = PromptSite(
+        id="aaaaaaaaaaaa",
+        name="workflow",
+        provider=Provider.OPENAI,
+        location=CodeLocation(file="x.py", line_start=10, line_end=12),
+        messages=[Message(role=Role.USER, template_text="first")],
+        parameters=CallParameters(),
+        confidence=Confidence.HIGH,
+    )
+    site_b = site_a.model_copy(update={"id": "bbbbbbbbbbbb"})
+    path_a = files.write_prompt(prompts_dir, site_a)
+    path_b = files.write_prompt(prompts_dir, site_b)
+
+    assert path_a != path_b, "same-named sites must land in distinct files"
+    assert path_a.exists() and path_b.exists()
+    assert files.read_prompt(path_a) == site_a
+    assert files.read_prompt(path_b) == site_b
+    assert len(files.list_prompts(prompts_dir)) == 2
 
 
 def test_write_prompt_is_byte_stable(prompts_dir: Path) -> None:
@@ -120,7 +148,8 @@ def test_list_prompts_finds_only_prompt_yaml(prompts_dir: Path) -> None:
 def test_write_pipeline_round_trip(pipelines_dir: Path) -> None:
     pipe = _pipe()
     path = files.write_pipeline(pipelines_dir, pipe)
-    assert path.name == "workflow.pipeline.yaml"
+    # Same id-suffix discipline as prompts (see Bug #1 regression).
+    assert path.name == "workflow.pipe1.pipeline.yaml"
     loaded = files.read_pipeline(path)
     assert loaded == pipe
 
