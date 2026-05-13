@@ -123,7 +123,7 @@ def _run_l2(result: ScanResult, *, auto_approve: bool, json_mode: bool) -> ScanR
     from aitap.config import Settings
 
     try:
-        from aitap.deep.client import get_client
+        from aitap.deep.client import ProviderError, get_client
         from aitap.deep.orchestrator import L2CostEstimate, enrich_with_l2
     except ImportError as exc:
         if not json_mode:
@@ -160,7 +160,22 @@ def _run_l2(result: ScanResult, *, auto_approve: bool, json_mode: bool) -> ScanR
             return False
         return typer.confirm("Proceed?", default=False)
 
-    return asyncio.run(enrich_with_l2(client, result, confirm=_confirm))
+    # Provider key validation is lazy (per the LLMClient contract — clients
+    # don't touch the network at construction). That means auth/rate-limit/
+    # transport errors only fire on the first chat() call inside the
+    # enrichers — i.e., here, inside asyncio.run. Without this guard,
+    # `aitap scan --deep` without an API key surfaces a full traceback
+    # instead of the documented "warn + L1 fallback" behaviour.
+    try:
+        return asyncio.run(enrich_with_l2(client, result, confirm=_confirm))
+    except ProviderError as exc:
+        if not json_mode:
+            typer.secho(
+                f"warning: L2 enrichment aborted ({exc}); using L1 result",
+                fg=typer.colors.YELLOW,
+                err=True,
+            )
+        return result
 
 
 def make_scan_command() -> typer.Typer:

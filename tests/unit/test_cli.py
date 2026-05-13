@@ -439,3 +439,46 @@ def test_scan_renders_unicode_glyphs_into_non_utf8_pipe(tmp_path: Path) -> None:
     # UnicodeEncodeError on Windows + GBK. If it makes it to stdout, we know
     # rich could write to the captured stream without exploding.
     assert "•" in result.stdout
+
+
+# --------------------------------------------------------------------------- #
+# L2 deep-scan failure modes (Bug #2 regression)                              #
+# --------------------------------------------------------------------------- #
+
+
+def test_scan_deep_falls_back_to_l1_when_provider_auth_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: aitap scan --deep with no API key used to crash with a
+    full ProviderAuthError traceback. The contract says: warn on stderr,
+    return the L1 result, exit 0. Auth errors fire lazily on the first
+    chat() call (per the LLMClient contract) — they propagate out of
+    asyncio.run inside the enrichers, so the wrapper around asyncio.run
+    is what makes the fallback work.
+    """
+    from aitap.deep.client import ProviderAuthError
+    from aitap.deep.testing import MockLLMClient
+
+    # MockLLMClient that blows up on the first chat() — same shape as a
+    # real provider whose API key is missing.
+    class _AuthFailingClient(MockLLMClient):
+        async def chat(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            raise ProviderAuthError("ANTHROPIC_API_KEY not set; pass api_key= or set the env var")
+
+    fixture = Path(__file__).resolve().parent.parent / "fixtures" / "openai_basic"
+    monkeypatch.setattr(
+        "aitap.deep.client.get_client",
+        lambda _provider, _model, api_key=None: _AuthFailingClient(),
+    )
+
+    runner = CliRunner(env={"COLUMNS": "200"})
+    result = runner.invoke(app, ["scan", str(fixture), "--deep", "--yes"])
+
+    assert result.exit_code == 0, (
+        f"--deep should not crash on auth failure; got exit {result.exit_code}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert "L2 enrichment aborted" in result.stderr
+    assert "ANTHROPIC_API_KEY" in result.stderr
+    # L1 result still rendered to stdout.
+    assert "Prompts" in result.stdout or "•" in result.stdout
