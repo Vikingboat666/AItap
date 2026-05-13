@@ -244,10 +244,32 @@ def test_audit_help_documents_repo_arg(runner: CliRunner) -> None:
     assert "gh:owner/repo" in _normalize(result.stdout)
 
 
-def test_audit_stub_runs(runner: CliRunner) -> None:
+def test_audit_invokes_clone_module(runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+    """audit_command should now delegate straight into aitap.audit.clone."""
+    captured: dict[str, object] = {}
+
+    def fake_audit_repo(repo: str, *, rules_only: bool, keep_clone: bool) -> int:
+        captured["repo"] = repo
+        captured["rules_only"] = rules_only
+        captured["keep_clone"] = keep_clone
+        return 0
+
+    monkeypatch.setattr("aitap.audit.clone.audit_repo", fake_audit_repo)
     result = runner.invoke(app, ["audit", "gh:foo/bar"])
     assert result.exit_code == 0, result.output
-    assert "not yet implemented" in result.stderr
+    assert captured == {"repo": "gh:foo/bar", "rules_only": True, "keep_clone": False}
+
+
+def test_audit_propagates_nonzero_exit(runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed clone returns non-zero from audit_repo; the CLI must surface
+    that as a non-zero exit code instead of swallowing it."""
+
+    def fake_audit_repo(*_args: object, **_kwargs: object) -> int:
+        return 7
+
+    monkeypatch.setattr("aitap.audit.clone.audit_repo", fake_audit_repo)
+    result = runner.invoke(app, ["audit", "gh:foo/bar"])
+    assert result.exit_code == 7
 
 
 def test_ui_help_shows_port(runner: CliRunner) -> None:
