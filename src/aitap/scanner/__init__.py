@@ -83,17 +83,16 @@ def scan_command(
         "--json",
         help="Emit ScanResult as JSON to stdout instead of a Markdown report.",
     ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Auto-approve cost prompts (e.g., L2 cost confirmation).",
+    ),
 ) -> None:
     """Scan PATH for LLM prompt sites and emit a Markdown report."""
     if deep and rules_only:
         raise typer.BadParameter("--deep and --rules-only are mutually exclusive.")
-    if deep:
-        # M5 wires up deep scanning. For now the flag is reserved.
-        typer.secho(
-            "warning: --deep is not yet implemented; running L1 scan instead.",
-            fg=typer.colors.YELLOW,
-            err=True,
-        )
 
     # Deferred import — see module docstring for why __init__ stays lazy.
     from aitap.scanner.engine import scan_project as _scan_project
@@ -102,11 +101,66 @@ def scan_command(
 
     result: ScanResult = _scan_project(path)
 
+    if deep:
+        result = _run_l2(result, auto_approve=yes, json_mode=json_output)
+
     if json_output:
         typer.echo(_to_json(result))
         return
 
     _render(result)
+
+
+def _run_l2(result: ScanResult, *, auto_approve: bool, json_mode: bool) -> ScanResult:
+    """Run the L2 enrichment pass, returning a new (or unchanged) ScanResult.
+
+    Defers the orchestrator + provider imports so a vanilla `aitap scan` (no
+    --deep) doesn't pay the import cost. Failures are surfaced as warnings
+    on stderr and the original result flows through.
+    """
+    import asyncio
+
+    from aitap.config import Settings
+
+    try:
+        from aitap.deep.client import get_client
+        from aitap.deep.orchestrator import L2CostEstimate, enrich_with_l2
+    except ImportError as exc:
+        if not json_mode:
+            typer.secho(f"warning: L2 unavailable ({exc})", fg=typer.colors.YELLOW, err=True)
+        return result
+
+    settings = Settings()
+    try:
+        client = get_client(
+            settings.provider.name,
+            settings.provider.model,
+        )
+    except Exception as exc:
+        if not json_mode:
+            typer.secho(
+                f"warning: cannot get L2 client ({exc}); falling back to L1 result",
+                fg=typer.colors.YELLOW,
+                err=True,
+            )
+        return result
+
+    def _confirm(estimate: L2CostEstimate) -> bool:
+        if not json_mode:
+            typer.secho(
+                f"L2 deep scan: {estimate.total_calls} LLM calls, "
+                f"~${estimate.estimated_usd:.4f} on {estimate.model}",
+                fg=typer.colors.CYAN,
+                err=True,
+            )
+        if auto_approve:
+            return True
+        if json_mode:
+            # Without TTY interaction in JSON mode we refuse to spend by default.
+            return False
+        return typer.confirm("Proceed?", default=False)
+
+    return asyncio.run(enrich_with_l2(client, result, confirm=_confirm))
 
 
 def make_scan_command() -> typer.Typer:
