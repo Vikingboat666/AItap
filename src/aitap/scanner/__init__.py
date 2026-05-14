@@ -83,17 +83,16 @@ def scan_command(
         "--json",
         help="Emit ScanResult as JSON to stdout instead of a Markdown report.",
     ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Auto-approve cost prompts (e.g., L2 cost confirmation).",
+    ),
 ) -> None:
     """Scan PATH for LLM prompt sites and emit a Markdown report."""
     if deep and rules_only:
         raise typer.BadParameter("--deep and --rules-only are mutually exclusive.")
-    if deep:
-        # M5 wires up deep scanning. For now the flag is reserved.
-        typer.secho(
-            "warning: --deep is not yet implemented; running L1 scan instead.",
-            fg=typer.colors.YELLOW,
-            err=True,
-        )
 
     # Deferred import — see module docstring for why __init__ stays lazy.
     from aitap.scanner.engine import scan_project as _scan_project
@@ -101,6 +100,13 @@ def scan_command(
     from aitap.scanner.report import render_terminal_report as _render
 
     result: ScanResult = _scan_project(path)
+
+    # L2 enrichment runs BEFORE persistence so the enriched data (confirmed
+    # confidence, resolved templates, inferred purposes) is what lands in
+    # .aitap/ — otherwise re-running scan would lose every enrichment
+    # between sessions.
+    if deep:
+        result = _run_l2(result, auto_approve=yes, json_mode=json_output)
 
     # Persistence hook (wt/store): silently no-ops when the user's project
     # hasn't run `aitap init`. Persistence is keyed off Settings.project_root
@@ -114,6 +120,73 @@ def scan_command(
         return
 
     _render(result)
+
+
+def _run_l2(result: ScanResult, *, auto_approve: bool, json_mode: bool) -> ScanResult:
+    """Run the L2 enrichment pass, returning a new (or unchanged) ScanResult.
+
+    Defers the orchestrator + provider imports so a vanilla `aitap scan` (no
+    --deep) doesn't pay the import cost. Failures are surfaced as warnings
+    on stderr and the original result flows through.
+    """
+    import asyncio
+
+    from aitap.config import Settings
+
+    try:
+        from aitap.deep.client import ProviderError, get_client
+        from aitap.deep.orchestrator import L2CostEstimate, enrich_with_l2
+    except ImportError as exc:
+        if not json_mode:
+            typer.secho(f"warning: L2 unavailable ({exc})", fg=typer.colors.YELLOW, err=True)
+        return result
+
+    settings = Settings()
+    try:
+        client = get_client(
+            settings.provider.name,
+            settings.provider.model,
+        )
+    except Exception as exc:
+        if not json_mode:
+            typer.secho(
+                f"warning: cannot get L2 client ({exc}); falling back to L1 result",
+                fg=typer.colors.YELLOW,
+                err=True,
+            )
+        return result
+
+    def _confirm(estimate: L2CostEstimate) -> bool:
+        if not json_mode:
+            typer.secho(
+                f"L2 deep scan: {estimate.total_calls} LLM calls, "
+                f"~${estimate.estimated_usd:.4f} on {estimate.model}",
+                fg=typer.colors.CYAN,
+                err=True,
+            )
+        if auto_approve:
+            return True
+        if json_mode:
+            # Without TTY interaction in JSON mode we refuse to spend by default.
+            return False
+        return typer.confirm("Proceed?", default=False)
+
+    # Provider key validation is lazy (per the LLMClient contract — clients
+    # don't touch the network at construction). That means auth/rate-limit/
+    # transport errors only fire on the first chat() call inside the
+    # enrichers — i.e., here, inside asyncio.run. Without this guard,
+    # `aitap scan --deep` without an API key surfaces a full traceback
+    # instead of the documented "warn + L1 fallback" behaviour.
+    try:
+        return asyncio.run(enrich_with_l2(client, result, confirm=_confirm))
+    except ProviderError as exc:
+        if not json_mode:
+            typer.secho(
+                f"warning: L2 enrichment aborted ({exc}); using L1 result",
+                fg=typer.colors.YELLOW,
+                err=True,
+            )
+        return result
 
 
 def _persist_if_initialised(result: ScanResult, *, suppress_output: bool) -> None:
