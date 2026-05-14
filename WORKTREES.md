@@ -532,6 +532,325 @@ Wave-1 worktrees and branches were removed after merge; the briefs below are kep
 
 ---
 
+## Wave 3 — next (6 parallel worktrees, M3 Web Playground + Pipeline Runner)
+
+| Worktree | Branch | Path |
+|---|---|---|
+| Prompts/history API | `wt/api-prompts` | `D:/AIcoding/aitap-api-prompts` |
+| Runs/settings API | `wt/api-runs` | `D:/AIcoding/aitap-api-runs` |
+| Playground runner | `wt/runner` | `D:/AIcoding/aitap-runner` |
+| UI inventory pages | `wt/ui-inventory` | `D:/AIcoding/aitap-ui-inventory` |
+| UI playground pages | `wt/ui-playground` | `D:/AIcoding/aitap-ui-playground` |
+| Test-case generators | `wt/dataset` | `D:/AIcoding/aitap-dataset` |
+
+**Coordination notes for Wave 3**
+
+- `server/app.py` (FastAPI entry) will be touched by both `wt/api-prompts` and `wt/api-runs` to register their routers. Each owns a clearly separated `app.include_router(...)` line; minor merge.
+- `cli.py:ui_command` body is owned by **`wt/runner`** (not the API worktrees) — its job is to launch uvicorn against the assembled FastAPI app and open the browser.
+- React pages share `ui/src/router.tsx`. Both UI worktrees add their own page routes; advise minor rebase on the second-merged.
+- All four contract files stay frozen. If a Wave-3 worktree thinks the OpenAPI shapes need new fields, follow the `CONTRACTS.md` change protocol — do not edit unilaterally.
+
+---
+
+## wt/api-prompts — Prompts/Pipelines/History API (Wave 3)
+
+**Goal**: Implement the read-side of the FastAPI surface — list/detail endpoints for prompts and pipelines, plus the history view that the UI's diff/rollback flows depend on.
+
+**In scope**
+
+- `src/aitap/server/routes/prompts.py` — `GET /api/prompts`, `GET /api/prompts/{id}`, `POST /api/prompts/{id}/versions` (returns the contract response shapes)
+- `src/aitap/server/routes/pipelines.py` — `GET /api/pipelines`, `GET /api/pipelines/{id}`
+- `src/aitap/server/routes/history.py` — `GET /api/history/{prompt_id}`, `POST /api/history/{prompt_id}/rollback`
+- `src/aitap/store/history.py` — DAO helpers: `next_version_for(prompt_id)`, `record_version(...)`, `read_versions(prompt_id)`, `diff_versions(prompt_id, v1, v2)`, `rollback_version(...)`. The `aitap diff` / `aitap rollback` CLI stubs in `cli.py` already look for this module via `find_spec`.
+- Wire routers into `server/app.py` (creating the file if it doesn't exist yet) via `app.include_router(prompts_router, prefix="/api")`.
+- `tests/integration/test_api_prompts.py` — use `httpx.AsyncClient(app=app)` to exercise endpoints against a temp `.aitap/` populated by a real `scan_project` run.
+
+**Out of scope**
+
+- Run/feedback/iteration endpoints (`wt/api-runs` owns)
+- Server bootstrap / uvicorn launch (`wt/runner` owns)
+- Any changes to `server/routes/__init__.py` (contract)
+
+**Acceptance criteria**
+
+- `httpx.AsyncClient` end-to-end: `GET /api/prompts` after a fixture scan returns `PromptListResponse` with the expected count
+- `aitap diff <prompt> 1 2` no longer prints "not yet implemented" — it returns a real diff
+- `aitap rollback <prompt> 1 --yes` creates a new head version pointing at v1's content
+- All endpoints return contract-defined Pydantic shapes (zero hand-rolled dicts)
+- pyright strict + ruff clean
+
+**Claude prompt**:
+
+```
+我现在在 wt/api-prompts 分支上的 worktree 里。
+
+请按 WORKTREES.md 中 "wt/api-prompts" 节实现 prompts/pipelines/history 三组 API + history DAO。
+
+开始前请读：
+1. CONTRACTS.md
+2. src/aitap/server/routes/__init__.py（API 形状契约）
+3. src/aitap/store/db.py（DDL，含 prompt_versions 表）
+4. src/aitap/store/__init__.py（已有的 persist_scan_result 模式）
+5. src/aitap/cli.py 中 diff_command / rollback_command（stub 检测的是 aitap.store.history）
+
+实现要求：
+- 路由文件用 APIRouter，全部 response_model 指向 contract 形状
+- store/history.py 是 DAO 层，CLI stub 完成后自动激活
+- 真实数据集成测试用 httpx.AsyncClient
+- 不动契约文件
+- 单 commit + 开 PR
+```
+
+---
+
+## wt/api-runs — Runs/Settings API (Wave 3)
+
+**Goal**: The write-side: create/list runs, attach feedback, fire iteration, and expose the settings surface (provider, cost limits, providers detected).
+
+**In scope**
+
+- `src/aitap/server/routes/runs.py` — `POST /api/runs`, `GET /api/runs/{id}`, `GET /api/runs?target_id=...`, `POST /api/runs/{id}/feedback`, `POST /api/runs/{id}/iterate`
+- `src/aitap/server/routes/settings.py` — `GET/PUT /api/settings`, `GET /api/settings/cost-estimate?prompt_id=...&model=...`
+- `src/aitap/store/runs.py` — DAO for runs/scores/feedback (insert + read; the schema already exists)
+- `src/aitap/iterate/__init__.py` — minimal stub `iterate_one_round(...)` that delegates to `wt/deep-scan`'s orchestrator pattern but is wired to the runs/feedback tables (full critique loop is M4 — for now a single-round runner is enough to make the iterate endpoint real)
+- Wire routers into `server/app.py` (alongside `wt/api-prompts`)
+- `tests/integration/test_api_runs.py` — POST a run, attach feedback, hit /iterate, assert state via the runs/scores tables
+
+**Out of scope**
+
+- Prompts/pipelines/history endpoints (`wt/api-prompts` owns)
+- The actual run executor (`wt/runner` owns — this worktree just records what runner produces)
+- LLM-as-judge / convergence loops (M4)
+
+**Acceptance criteria**
+
+- `POST /api/runs` accepts a `RunCreate`, queues a run, returns `RunResponse` with status
+- `POST /api/runs/{id}/feedback` writes to the `feedback` table and returns the feedback id
+- `GET /api/settings` reflects the current `Settings()` and detected providers
+- pyright strict + ruff clean
+
+**Claude prompt**:
+
+```
+我现在在 wt/api-runs 分支上的 worktree 里。
+
+请按 WORKTREES.md 中 "wt/api-runs" 节实现 runs/settings 两组 API + 最小 iterate stub。
+
+开始前请读：
+1. CONTRACTS.md
+2. src/aitap/server/routes/__init__.py 中 RunCreate / FeedbackCreate / IterateRequest / SettingsResponse
+3. src/aitap/store/db.py（runs/scores/feedback 表）
+4. src/aitap/config.py（Settings）
+5. wt/runner 的 brief（你 POST /api/runs 时实际执行交给它，不要重复造）
+
+实现要求：
+- 真实 iterate 闭环留 M4；本波只要把 endpoint 跑通：拿 feedback、调 wt/runner 的 runner、写一行新 prompt_version
+- 不动契约文件
+- 不动 wt/api-prompts 拥有的文件
+- 单 commit + 开 PR
+```
+
+---
+
+## wt/runner — Playground runner (Wave 3)
+
+**Goal**: Execute prompts and pipelines against a chosen provider/model; this is the engine that powers `POST /api/runs`. Single source of truth for "given a prompt + dataset cases, produce outputs".
+
+**In scope**
+
+- `src/aitap/playground/runner.py` — `async def run_prompt(site, version, dataset_cases, client, parameters) -> list[RunOutput]`. One LLM call per case via `asyncio.gather`. Records token usage + cost via the client's `chat()` return.
+- `src/aitap/playground/pipeline_runner.py` — three modes from the plan:
+  - `node`: run a single PromptSite inside a pipeline (delegates to `runner.run_prompt`)
+  - `segment`: run a contiguous slice of node ids; pipe outputs through using the dataflow edges
+  - `end_to_end`: feed `cases.inputs` at entry_points, walk the DAG, capture every intermediate output to `intermediates`
+- `src/aitap/server/app.py` — assemble FastAPI app + uvicorn bootstrap, mount static React assets if present. Replaces the placeholder app.py if `wt/api-prompts` created one.
+- `src/aitap/cli.py:ui_command` — replace stub body with `uvicorn.run(server.app.app, ...)` + auto-open browser unless `--no-browser`.
+- `tests/unit/test_playground_runner.py` — drive with `MockLLMClient`; verify per-case outputs, cost aggregation, error case captures
+- `tests/unit/test_pipeline_runner.py` — three modes against a 3-node DAG fixture
+
+**Out of scope**
+
+- API endpoint implementation (`wt/api-runs` owns)
+- Iteration / judge logic (M4)
+- Image-prompt grid view (M5)
+
+**Acceptance criteria**
+
+- `aitap ui` actually serves a FastAPI app on the chosen port (even with no UI bundle: returns `{"status":"ok"}` from `/api/health`)
+- pipeline_runner end-to-end mode produces all intermediates given an entry-point input
+- pyright strict + ruff clean
+
+**Claude prompt**:
+
+```
+我现在在 wt/runner 分支上的 worktree 里。
+
+请按 WORKTREES.md 中 "wt/runner" 节实现 prompt/pipeline runner + server bootstrap + ui 命令体。
+
+开始前请读：
+1. CONTRACTS.md
+2. src/aitap/scanner/models.py（PromptSite/Pipeline/PipelineEdge）
+3. src/aitap/server/routes/__init__.py（RunOutput / DatasetCase）
+4. src/aitap/deep/client.py（LLMClient 抽象）
+5. src/aitap/deep/testing.py（MockLLMClient，单测用）
+6. src/aitap/cli.py 中 ui_command 现有的 stub
+7. wt/api-runs 的 brief（API 怎么调你）
+
+实现要求：
+- 用 asyncio.gather 并发跑 cases；不要顺序 await
+- pipeline end-to-end 必须保留每个节点的中间输出（写到 intermediates）
+- aitap ui 启动 uvicorn；--no-browser 控制是否开浏览器
+- 不动契约文件 / wt/api-prompts / wt/api-runs / wt/dataset
+- 单 commit + 开 PR
+```
+
+---
+
+## wt/ui-inventory — Inventory pages with real API (Wave 3)
+
+**Goal**: Replace the mock-data Inventory / PromptDetail / PipelineDetail pages with real `tanstack/react-query` calls against `/api/prompts` and `/api/pipelines`.
+
+**In scope**
+
+- `src/aitap/ui/src/api/generated/` — run `pnpm gen:api` against the server's OpenAPI; commit the generated TS types
+- `src/aitap/ui/src/api/client.ts` — wire the generated client (replace the placeholder in Wave 1)
+- `src/aitap/ui/src/pages/Inventory.tsx` — switch from `mock.ts` to `useQuery({ queryKey: ['prompts'], queryFn: fetchPrompts })`; preserve the dual-tab Prompts/Pipelines layout
+- `src/aitap/ui/src/pages/PromptDetail.tsx` — fetch `/api/prompts/{id}`; render version list with diff buttons (UI only — diff modal can be a placeholder linking to `aitap diff` for now)
+- `src/aitap/ui/src/pages/PipelineDetail.tsx` — fetch `/api/pipelines/{id}`; the existing `DagView` keeps working with real Pipeline data
+- Loading/error states for every fetch (skeleton + retry button)
+- `tests/ui/inventory.spec.ts` — Playwright/vitest E2E (skipped without API server) — at minimum, vitest component tests with msw mocking
+
+**Out of scope**
+
+- Playground / History pages (`wt/ui-playground` owns)
+- Iteration UI (M4)
+- API implementation (`wt/api-prompts` owns)
+
+**Acceptance criteria**
+
+- `pnpm dev` against a running `aitap ui` shows real prompts/pipelines from a scanned fixture
+- `pnpm typecheck` clean
+- `pnpm lint` clean
+- DagView renders edges with the correct `EdgeKind` styling (variable=solid, langchain_pipe=solid, llamaindex/unresolved=dashed)
+
+**Claude prompt**:
+
+```
+我现在在 wt/ui-inventory 分支上的 worktree 里。
+
+请按 WORKTREES.md 中 "wt/ui-inventory" 节把 Inventory / PromptDetail / PipelineDetail 三页接上真实 API。
+
+开始前请读：
+1. src/aitap/server/routes/__init__.py（API 形状）
+2. src/aitap/ui/src/api/mock.ts（要替换的对象）
+3. src/aitap/ui/src/pages/{Inventory,PromptDetail,PipelineDetail}.tsx（现有 mock 版）
+4. src/aitap/ui/package.json 中 gen:api 脚本
+
+实现要求：
+- 先跑 gen:api 生成 TS 客户端，然后用之
+- React Query 管缓存，不要手写 fetch loops
+- Loading/error 都有 UI 状态
+- 不动 wt/ui-playground 的页面
+- 单 commit + 开 PR
+```
+
+---
+
+## wt/ui-playground — Playground + History pages (Wave 3)
+
+**Goal**: The "do work" pages — pick a prompt + dataset, fire a run, watch results stream in; later visit History to see versions/scores/diff.
+
+**In scope**
+
+- `src/aitap/ui/src/pages/Playground.tsx` — prompt selector → dataset editor (inline JSON cases) → model/params controls → "Run" button → results table with per-case output, cost, latency
+- `src/aitap/ui/src/pages/History.tsx` — version timeline + per-version score chart; diff button opens side-by-side compare modal
+- `src/aitap/ui/src/components/ResultsTable.tsx` — reusable across Playground and History
+- `src/aitap/ui/src/components/CaseEditor.tsx` — reusable JSON editor with validation
+- Hooked to `POST /api/runs`, `GET /api/runs/{id}`, `POST /api/runs/{id}/feedback`, `GET /api/history/{prompt_id}`
+- React Query optimistic updates so feedback feels instant
+
+**Out of scope**
+
+- Inventory / detail pages (`wt/ui-inventory` owns)
+- Auto-iterate UI (M4)
+- Image-prompt grid (M5)
+
+**Acceptance criteria**
+
+- Open Playground for a real prompt → add 3 cases → Run → results table populates
+- History page shows ≥1 version per prompt that's been run
+- pnpm typecheck / lint clean
+
+**Claude prompt**:
+
+```
+我现在在 wt/ui-playground 分支上的 worktree 里。
+
+请按 WORKTREES.md 中 "wt/ui-playground" 节实现 Playground + History 两页 + 复用组件。
+
+开始前请读：
+1. src/aitap/server/routes/__init__.py（RunCreate / RunOutput / FeedbackCreate / HistoryEntry）
+2. src/aitap/ui/src/pages/{Playground,History}.tsx（现有 mock 版）
+3. wt/ui-inventory 的 brief（你和它共用 API client + react-query）
+
+实现要求：
+- 反馈用 React Query 的 optimistic updates，按钮点完立刻看反应
+- ResultsTable 和 CaseEditor 提到 components/ 复用
+- 不动 wt/ui-inventory 的页面
+- 单 commit + 开 PR
+```
+
+---
+
+## wt/dataset — Test-case generators (Wave 3)
+
+**Goal**: The "L0/L1/L2 四级火箭" of the plan's test-case strategy — make adding 30 cases for a prompt cheap. Powers the dataset editor in `wt/ui-playground` and the iterate loop in M4.
+
+**In scope**
+
+- `src/aitap/dataset/seed.py` — read/write user-provided seed cases from `.aitap/datasets/<name>.cases.jsonl` (uses `wt/store`'s `files.append_cases`)
+- `src/aitap/dataset/llm_expander.py` — `async def expand(seeds, count, client, prompt_purpose) -> list[Case]`: ask the LLM to generate variants (boundary/adversarial/noise) given seeds + the prompt's purpose
+- `src/aitap/dataset/code_context.py` — `infer_input_shape(site, project_root) -> InputShape`: read the call site's surrounding code (function signature, type hints) to describe what shape the input should take; used as additional grounding for `llm_expander`
+- `src/aitap/dataset/fixture_miner.py` — scan the project's `tests/`, `fixtures/`, `examples/` for existing dict/JSON literals that look like prompt inputs; surface them as candidate seeds
+- `src/aitap/dataset/__init__.py` — orchestrator: `generate_cases(site, mode="seed"|"expand"|"context"|"fixtures", n=10, client=None) -> list[Case]`
+- All tests use `MockLLMClient` from `wt/deep-scan` (no network)
+
+**Out of scope**
+
+- Iteration / scoring (M4)
+- UI for editing cases (`wt/ui-playground` handles the UX)
+
+**Acceptance criteria**
+
+- `expand([{...}, {...}], count=5, client=MockLLMClient(scripted=...))` returns 5 cases with the LLM's responses parsed
+- `infer_input_shape` against the openai_basic fixture returns a non-empty InputShape (e.g., `{"text": "string", "topic": "string"}`)
+- `fixture_miner` finds at least one candidate in `tests/fixtures/openai_basic`
+- pyright strict + ruff clean
+
+**Claude prompt**:
+
+```
+我现在在 wt/dataset 分支上的 worktree 里。
+
+请按 WORKTREES.md 中 "wt/dataset" 节实现测试用例生成的 L0/L1/L2 三层（L3 推到 v0.2）。
+
+开始前请读：
+1. CONTRACTS.md
+2. src/aitap/scanner/models.py（PromptSite，特别是 location + parameters + purpose）
+3. src/aitap/store/files.py（append_cases / read_cases）
+4. src/aitap/deep/client.py + src/aitap/deep/testing.py（MockLLMClient）
+5. C:\Users\1\.claude\plans\llm-humming-pike.md 中"测试用例策略"
+
+实现要求：
+- llm_expander 的 LLM 调用走 LLMClient 抽象，不直接打 SDK
+- code_context.py 用 ast 模块；不要发明新 AST 工具，能复用 scanner.languages.python 的就复用
+- fixture_miner 扫 tests/fixtures examples 里的字面量，启发式提取
+- 全部测试用 MockLLMClient
+- 单 commit + 开 PR
+```
+
+---
+
 ## Coordination
 
 **Daily**: each worktree rebases on `origin/main` first thing.
@@ -539,3 +858,5 @@ Wave-1 worktrees and branches were removed after merge; the briefs below are kep
 **Contract changes**: see `CONTRACTS.md` — single PR, broadcast to all worktrees, everyone rebases.
 
 **Wave 2 → Wave 3 sync**: when all 5 Wave-2 worktrees merge, tag `wave-2-complete` on main and proceed to Wave 3 (see plan).
+
+**Wave 3 → Wave 4 sync**: when all 6 Wave-3 worktrees merge, tag `wave-3-complete` and proceed to Wave 4 (M4: iteration / judge / impact analysis).
