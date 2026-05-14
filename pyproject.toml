@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aitap"
-version = "0.1.0.dev0"
+version = "0.1.0a1"
 description = "Zero-config CLI to discover, test, and iterate prompts in your AI codebase"
 readme = "README.md"
 license = { text = "Apache-2.0" }
