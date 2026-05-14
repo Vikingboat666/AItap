@@ -125,8 +125,14 @@ class AnthropicClient(LLMClient):
 # --------------------------------------------------------------------------- #
 
 
-def _import_sdk():
-    """Lazy import of the anthropic SDK. Raises ProviderError if missing."""
+def _import_sdk() -> tuple[Any, Any]:
+    """Lazy import of the anthropic SDK. Raises ProviderError if missing.
+
+    Return type is ``tuple[Any, Any]`` (not the literal SDK class + module)
+    because the ``anthropic`` package is an optional extra; declaring it
+    as ``Any`` keeps pyright/strict happy on Python 3.10 (which is stricter
+    than 3.11+ about reporting unknown types in unannotated returns).
+    """
     try:
         import anthropic  # type: ignore[import-not-found]
     except ImportError as exc:

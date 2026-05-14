@@ -111,7 +111,10 @@ class OpenAIClient(LLMClient):
 # --------------------------------------------------------------------------- #
 
 
-def _import_sdk():
+def _import_sdk() -> tuple[Any, Any]:
+    """Lazy import of the openai SDK. Same Any-typed pattern as
+    anthropic_client._import_sdk — keeps pyright strict on Python 3.10
+    happy when the optional [openai] extra isn't installed."""
     try:
         import openai  # type: ignore[import-not-found]
     except ImportError as exc:
