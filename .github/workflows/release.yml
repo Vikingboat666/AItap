@@ -34,9 +34,24 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  # PyPI publish is disabled until aitap is ready for public distribution.
+  # Reasons it's gated off for now:
+  #  1. The repo is private — auto-publishing every tagged commit to public
+  #     PyPI would effectively expose all source via the wheel.
+  #  2. The package name `aitap` hasn't been claimed on PyPI yet, and PyPI
+  #     trusted-publishing isn't configured (would fail every tag push).
+  #
+  # When you're ready to ship publicly:
+  #  - Reserve `aitap` on PyPI (`uv publish` or `twine upload` from a local
+  #    build); this lets you set up trusted publishing on the project page.
+  #  - Configure trusted publisher: PyPI project Settings → Publishing →
+  #    Add GitHub publisher (owner=Vikingboat666, repo=AItap, workflow=
+  #    release.yml, environment=pypi).
+  #  - Re-enable the job below by removing the `if: false` guard.
   publish:
     name: Publish to PyPI
     needs: build
+    if: false  # ← flip to `true` (or remove this line) when ready to publish
     runs-on: ubuntu-latest
     environment:
       name: pypi
