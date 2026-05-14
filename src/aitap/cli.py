@@ -340,19 +340,10 @@ def audit_command(
     ] = False,
 ) -> None:
     """Read-only audit of a remote repository (clone → scan → report → cleanup)."""
-    if not _module_available("aitap.audit.clone"):
-        _not_yet_implemented(
-            "audit",
-            "coming in M2 (remote audit)",
-            hint=(
-                f"Would audit: [bold]{repo}[/bold]\n"
-                f"Keep clone: {keep_clone}    Rules-only: {rules_only}"
-            ),
-        )
-        return
-
     audit = import_module("aitap.audit.clone")
-    audit.audit_repo(repo, rules_only=rules_only, keep_clone=keep_clone)
+    exit_code = audit.audit_repo(repo, rules_only=rules_only, keep_clone=keep_clone)
+    if exit_code != 0:
+        raise typer.Exit(code=exit_code)
 
 
 @app.command("ui")

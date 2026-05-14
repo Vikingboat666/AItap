@@ -21,6 +21,10 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from aitap.scanner.models import Pipeline, PromptSite, ProviderEvidence
 
 SCHEMA_VERSION = 1
 
@@ -210,3 +214,133 @@ def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
         raise
     else:
         conn.execute("COMMIT")
+
+
+# ---------------------------------------------------------------------------
+# DAO functions — built on top of the frozen DDL above
+# ---------------------------------------------------------------------------
+
+
+def upsert_prompt(
+    conn: sqlite3.Connection,
+    site: PromptSite,
+    *,
+    last_commit: str | None = None,
+) -> None:
+    """Insert or update a :class:`~aitap.scanner.models.PromptSite` row.
+
+    Uses ``PromptSite.id`` as the primary key. On conflict, updates the
+    payload + ``last_seen_at`` + ``last_commit`` while preserving
+    ``first_seen_at`` so history isn't lost.
+    """
+    conn.execute(
+        """
+        INSERT INTO prompts
+            (id, name, provider, file, line_start, line_end, purpose,
+             confidence, payload_json, last_commit)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            name        = excluded.name,
+            provider    = excluded.provider,
+            file        = excluded.file,
+            line_start  = excluded.line_start,
+            line_end    = excluded.line_end,
+            purpose     = excluded.purpose,
+            confidence  = excluded.confidence,
+            payload_json= excluded.payload_json,
+            last_seen_at= datetime('now'),
+            last_commit = excluded.last_commit
+        """,
+        (
+            site.id,
+            site.name,
+            site.provider.value,
+            site.location.file,
+            site.location.line_start,
+            site.location.line_end,
+            site.purpose,
+            site.confidence.value,
+            site.model_dump_json(),
+            last_commit,
+        ),
+    )
+
+
+def upsert_pipeline(
+    conn: sqlite3.Connection,
+    pipeline: Pipeline,
+    *,
+    last_commit: str | None = None,
+) -> None:
+    """Insert or update a :class:`~aitap.scanner.models.Pipeline` row.
+
+    Uses ``Pipeline.id`` as the primary key. Idempotent — safe to call on
+    every scan even when the pipeline has not changed.
+    """
+    conn.execute(
+        """
+        INSERT INTO pipelines (id, name, payload_json, last_commit)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            name        = excluded.name,
+            payload_json= excluded.payload_json,
+            last_seen_at= datetime('now'),
+            last_commit = excluded.last_commit
+        """,
+        (
+            pipeline.id,
+            pipeline.name,
+            pipeline.model_dump_json(),
+            last_commit,
+        ),
+    )
+
+
+def record_provider_evidence(
+    conn: sqlite3.Connection,
+    project_root: str,
+    ev: ProviderEvidence,
+) -> None:
+    """Insert-or-ignore a :class:`~aitap.scanner.models.ProviderEvidence` row.
+
+    PK is ``(project_root, provider, file, key_var_name)`` so repeated
+    scans produce no duplicates; ``detected_at`` is preserved.
+    """
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO providers_detected
+            (project_root, provider, source, file, line_start, key_var_name)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            project_root,
+            ev.provider.value,
+            ev.source,
+            ev.location.file,
+            ev.location.line_start,
+            ev.key_var_name,
+        ),
+    )
+
+
+def read_prompts(
+    conn: sqlite3.Connection,
+    *,
+    name: str | None = None,
+) -> list[sqlite3.Row]:
+    """Return prompt rows, optionally filtered by *name*.
+
+    Returns raw :class:`sqlite3.Row` objects so callers decide whether to
+    deserialise ``payload_json`` or just inspect columns.
+    """
+    if name is not None:
+        cur = conn.execute("SELECT * FROM prompts WHERE name = ? ORDER BY first_seen_at", (name,))
+    else:
+        cur = conn.execute("SELECT * FROM prompts ORDER BY first_seen_at")
+    return cur.fetchall()
+
+
+def read_pipelines(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Return all pipeline rows ordered by first detection time."""
+    cur = conn.execute("SELECT * FROM pipelines ORDER BY first_seen_at")
+    return cur.fetchall()

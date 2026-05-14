@@ -92,22 +92,24 @@ def scan_project(
 
     providers: list[ProviderEvidence] = scan_paths_for_providers(sorted(config_files), root)
 
+    # Pipeline detection — dataflow analysis runs on the same Python files
+    # we already iterated, but reparses each one so the dataflow module
+    # stays decoupled from the prompt-extractor's _PromptSiteVisitor.
+    # The cost is acceptable: typical AI projects have <100 files.
+    from aitap.scanner.dataflow import detect_pipelines
+
+    pipelines: list[Pipeline] = detect_pipelines(sorted(py_files), root, prompts)
+
     return ScanResult(
         project_root=root.as_posix(),
         git_commit=git_commit,
         files_scanned=len(py_files) + len(config_files),
         prompts=prompts,
-        pipelines=_empty_pipelines(),
+        pipelines=pipelines,
         providers_detected=providers,
         warnings=warnings,
         l2_used=False,
     )
-
-
-def _empty_pipelines() -> list[Pipeline]:
-    """Pipeline detection lands in M2 (``wt/dataflow``); for now we return an
-    empty, properly-typed list so :class:`ScanResult` validation passes."""
-    return []
 
 
 def _iter_files(root: Path, ignore_dirs: frozenset[str]) -> Iterable[Path]:
