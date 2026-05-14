@@ -102,11 +102,49 @@ def scan_command(
 
     result: ScanResult = _scan_project(path)
 
+    # Persistence hook (wt/store): silently no-ops when the user's project
+    # hasn't run `aitap init`. Persistence is keyed off Settings.project_root
+    # (defaults to cwd, overridable via $AITAP_PROJECT_ROOT) — *not* the scan
+    # target — so `aitap scan src/` from a project root persists into ./.aitap,
+    # and scanning a fixture inside the test suite never touches anything.
+    _persist_if_initialised(result, suppress_output=json_output)
+
     if json_output:
         typer.echo(_to_json(result))
         return
 
     _render(result)
+
+
+def _persist_if_initialised(result: ScanResult, *, suppress_output: bool) -> None:
+    """Write *result* into the user's project ``.aitap/`` if it exists.
+
+    Errors are surfaced to stderr but never raise — a persistence failure
+    must not mask the scan output the user came for.
+    """
+    from aitap.config import Settings
+    from aitap.store import persist_scan_result
+
+    try:
+        report = persist_scan_result(Settings(), result)
+    except Exception as exc:
+        if not suppress_output:
+            typer.secho(
+                f"warning: failed to persist scan to .aitap/: {exc}",
+                fg=typer.colors.YELLOW,
+                err=True,
+            )
+        return
+
+    if suppress_output or report.skipped_no_aitap:
+        return
+
+    typer.secho(
+        f"persisted to .aitap/  ({report.prompts_written} prompts, "
+        f"{report.pipelines_written} pipelines)",
+        fg=typer.colors.GREEN,
+        err=True,
+    )
 
 
 def make_scan_command() -> typer.Typer:
