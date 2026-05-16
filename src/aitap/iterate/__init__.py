@@ -34,6 +34,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import cast
 
+from aitap.store import db as store_db
 from aitap.store import runs as runs_dao
 
 
@@ -106,19 +107,26 @@ def iterate_one_round(
         template_json = json.dumps([])
         parameters_json = json.dumps({})
 
-    next_version = runs_dao.latest_prompt_version(conn, target_id) + 1
     note = f"{note_prefix} from run {run_id} ({len(feedback_rows)} feedback)"
 
-    runs_dao.insert_prompt_version(
-        conn,
-        prompt_id=target_id,
-        version=next_version,
-        template_json=template_json,
-        parameters_json=parameters_json,
-        note=note,
-        created_by="iteration",
-        parent_version=target_version,
-    )
+    # Bump the version inside a write-locked transaction so two concurrent
+    # iterate calls against the same prompt can't both read MAX(version)=N,
+    # both try to insert N+1, and one collide on the (prompt_id, version)
+    # primary key. ``BEGIN IMMEDIATE`` reserves the write lock up front;
+    # the second caller waits at the BEGIN until the first commits, then
+    # observes the new MAX and computes the next slot.
+    with store_db.transaction(conn, immediate=True):
+        next_version = runs_dao.latest_prompt_version(conn, target_id) + 1
+        runs_dao.insert_prompt_version(
+            conn,
+            prompt_id=target_id,
+            version=next_version,
+            template_json=template_json,
+            parameters_json=parameters_json,
+            note=note,
+            created_by="iteration",
+            parent_version=target_version,
+        )
 
     # M4 will replace this with the post-rewrite judge result; for now we
     # echo score_before so the response surface has the right shape.

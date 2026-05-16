@@ -24,6 +24,7 @@ What's covered:
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
@@ -309,6 +310,59 @@ async def test_iterate_bumps_version_on_subsequent_calls(
         conn.close()
 
 
+async def test_iterate_concurrent_calls_do_not_collide(
+    app_with_settings,
+    settings: Settings,
+) -> None:
+    """Concurrent ``POST /iterate`` calls don't collide on (prompt_id, version).
+
+    Regression test for B6: ``iterate_one_round`` used to read
+    ``MAX(version)`` and then INSERT ``MAX+1`` in two separate statements
+    on an autocommit connection. With ten concurrent calls both readers
+    would compute the same ``next_version`` and the loser would hit a
+    primary-key collision (HTTP 500). The fix wraps the read-modify-write
+    in a ``BEGIN IMMEDIATE`` transaction so each request sees the previous
+    one's commit before computing its slot. We exercise a higher fan-out
+    than two here to stress the lock-ordering, and require *all* requests
+    to succeed with distinct, monotonically increasing versions.
+    """
+    _seed_prompt(settings)
+    # Each request needs its own client because httpx.AsyncClient
+    # serialises requests through a single connection pool — the goal is
+    # to interleave at the server / DB layer, not the transport layer.
+    n_calls = 5
+
+    async def _one_iterate() -> dict[str, object]:
+        transport = ASGITransport(app=app_with_settings)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            posted = (await ac.post("/api/runs", json=_run_payload())).json()
+            resp = await ac.post(
+                f"/api/runs/{posted['run_id']}/iterate",
+                json={"max_iterations": 1},
+            )
+        return {"status": resp.status_code, "body": resp.json()}
+
+    results = await asyncio.gather(*[_one_iterate() for _ in range(n_calls)])
+
+    statuses = [r["status"] for r in results]
+    assert statuses == [201] * n_calls, results
+
+    bodies = [cast(dict[str, object], r["body"]) for r in results]
+    versions = sorted(int(cast(int, b["new_version"])) for b in bodies)
+    # No duplicates and the set covers exactly 1..n.
+    assert versions == list(range(1, n_calls + 1)), versions
+
+    conn = _open_conn(settings)
+    try:
+        rows = conn.execute(
+            "SELECT version FROM prompt_versions WHERE prompt_id = ? ORDER BY version",
+            ("prompt-abc",),
+        ).fetchall()
+        assert [r["version"] for r in rows] == list(range(1, n_calls + 1))
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Settings
 # ---------------------------------------------------------------------------
@@ -377,14 +431,20 @@ async def test_cost_estimate_known_model(
     client: AsyncClient,
     settings: Settings,
 ) -> None:
-    """Seed a prompt_versions row so the estimator has template text to hash."""
+    """Seed a prompt_versions row so the estimator has template text to hash.
+
+    The default project provider is anthropic (see :class:`ProviderConfig`),
+    so we query a known anthropic model to stay on-provider — the
+    cost-estimate endpoint refuses to silently price cross-provider since
+    the B5 fix.
+    """
     conn = _open_conn(settings)
     try:
         conn.execute(
             """
             INSERT INTO prompts (id, name, provider, file, line_start, line_end,
                                  confidence, payload_json)
-            VALUES ('prompt-cost', 'cost_target', 'openai', 'x.py', 1, 5,
+            VALUES ('prompt-cost', 'cost_target', 'anthropic', 'x.py', 1, 5,
                     'high', '{}')
             """
         )
@@ -406,13 +466,61 @@ async def test_cost_estimate_known_model(
 
     resp = await client.get(
         "/api/settings/cost-estimate",
-        params={"prompt_id": "prompt-cost", "model": "gpt-4o-mini"},
+        params={"prompt_id": "prompt-cost", "model": "claude-sonnet-4-6"},
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["model"] == "gpt-4o-mini"
+    assert body["model"] == "claude-sonnet-4-6"
     assert body["estimated_tokens"] > 0
     assert body["estimated_usd"] >= 0
+
+
+async def test_cost_estimate_400_on_provider_mismatch(
+    client: AsyncClient,
+    settings: Settings,
+) -> None:
+    """Asking for an OpenAI model on an anthropic-configured project 400s.
+
+    Regression test for B5: the previous implementation silently re-priced
+    the request against the OpenAI table and returned a number the user
+    would then treat as authoritative. The fix surfaces the misconfig as
+    a 400 whose ``detail`` names both the offending model and the
+    configured provider so the user can switch one or the other.
+    """
+    conn = _open_conn(settings)
+    try:
+        conn.execute(
+            """
+            INSERT INTO prompts (id, name, provider, file, line_start, line_end,
+                                 confidence, payload_json)
+            VALUES ('prompt-cost', 'cost_target', 'anthropic', 'x.py', 1, 5,
+                    'high', '{}')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO prompt_versions
+                (prompt_id, version, template_json, parameters_json)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                "prompt-cost",
+                1,
+                '[{"role":"user","template_text":"Pick a date."}]',
+                "{}",
+            ),
+        )
+    finally:
+        conn.close()
+
+    resp = await client.get(
+        "/api/settings/cost-estimate",
+        params={"prompt_id": "prompt-cost", "model": "gpt-4o-mini"},
+    )
+    assert resp.status_code == 400, resp.text
+    detail = resp.json()["detail"]
+    assert "'gpt-4o-mini'" in detail
+    assert "'anthropic'" in detail
 
 
 async def test_cost_estimate_unknown_model_returns_400(

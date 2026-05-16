@@ -124,9 +124,14 @@ def get_cost_estimate(
     # the estimate up to billions of tokens.
     output_tokens = min(1024, max(64, input_tokens))
 
-    # Try the active provider first; if it doesn't price this model, fall
-    # back to scanning every known provider so the UX works for
-    # "estimate gpt-4o on a project configured for anthropic" cross-checks.
+    # Price only with the project's *configured* provider. A silent
+    # cross-provider fallback used to mask the common "I switched provider
+    # in the UI but forgot to update the model" case: a user configured for
+    # Anthropic could query ``gpt-4o`` and get a quote computed off the
+    # OpenAI table. Cost limits built on that number would lie about what
+    # the next real run will spend. So if the model isn't priced under the
+    # configured provider, we surface the misconfiguration as a 400 with
+    # both pieces of context the operator needs to fix it.
     provider_name, _, _ = _effective_provider(settings)
     try:
         usd = pricing.estimate_usd(
@@ -136,12 +141,23 @@ def get_cost_estimate(
             output_tokens=output_tokens,
         )
     except pricing.UnknownModelError:
-        usd = _fallback_estimate(model, input_tokens, output_tokens)
-        if usd is None:
+        other_provider = _provider_pricing_model(model, exclude=provider_name)
+        if other_provider is not None:
             raise HTTPException(
                 status_code=400,
-                detail=f"no pricing for model {model!r}; add it to deep/pricing.py",
+                detail=(
+                    f"model {model!r} is not configured for provider "
+                    f"{provider_name!r}; configure the {other_provider!r} "
+                    f"provider or query a known {provider_name} model"
+                ),
             ) from None
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"no pricing for model {model!r} under provider "
+                f"{provider_name!r}; add it to deep/pricing.py"
+            ),
+        ) from None
 
     return CostEstimateResponse(
         estimated_tokens=input_tokens + output_tokens,
@@ -218,28 +234,20 @@ def _read_detected_providers(settings: Settings) -> list[ProviderEvidence]:
     return out
 
 
-def _fallback_estimate(
-    model: str,
-    input_tokens: int,
-    output_tokens: int,
-) -> float | None:
-    """Cross-check every priced provider for *model*.
+def _provider_pricing_model(model: str, *, exclude: str) -> str | None:
+    """Return the *other* provider that prices *model*, or ``None``.
 
-    Cost is independent of which SDK is configured — pricing depends only
-    on the model — so when the project's active provider doesn't have a
-    quote for the requested model, try the others. Returns None when no
-    provider has pricing for the model.
+    Used to make the 400 we raise on provider/model mismatch actionable —
+    if Anthropic is configured but the user queried ``gpt-4o``, the error
+    message can name OpenAI as the provider they probably meant to switch
+    to. We intentionally do **not** use this to compute a cost; the silent
+    cross-provider fallback hid configuration bugs.
     """
     for candidate in ("anthropic", "openai"):
-        try:
-            return pricing.estimate_usd(
-                candidate,
-                model,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-            )
-        except pricing.UnknownModelError:
+        if candidate == exclude:
             continue
+        if model in pricing.known_models(candidate):
+            return candidate
     return None
 
 

@@ -201,12 +201,24 @@ def init_db(conn: sqlite3.Connection) -> None:
 
 
 @contextmanager
-def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+def transaction(
+    conn: sqlite3.Connection,
+    *,
+    immediate: bool = False,
+) -> Iterator[sqlite3.Connection]:
     """Context manager wrapping a BEGIN/COMMIT/ROLLBACK.
 
     Use when a logical operation spans multiple statements.
+
+    Set ``immediate=True`` to issue ``BEGIN IMMEDIATE`` instead of the
+    default deferred ``BEGIN``. SQLite's deferred BEGIN only takes the
+    write lock on the first write, so two threads/processes can both read
+    state and then race to write — the second loses with ``database is
+    locked``. ``BEGIN IMMEDIATE`` acquires the reserved (write) lock up
+    front, serialising the whole read-modify-write sequence. Pay this
+    cost for monotonic-counter style updates (e.g. ``MAX(version) + 1``).
     """
-    conn.execute("BEGIN")
+    conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
     try:
         yield conn
     except Exception:
