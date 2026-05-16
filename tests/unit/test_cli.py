@@ -284,10 +284,26 @@ def test_ui_help_does_not_advertise_public_bind(runner: CliRunner) -> None:
     assert "0.0.0.0" not in _normalize(result.stdout)
 
 
-def test_ui_stub_runs(runner: CliRunner) -> None:
+def test_ui_invokes_server_serve(runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Once aitap.server.app exists, ui_command dispatches into serve().
+
+    Before wt/api-prompts shipped, this slot was occupied by a stub-
+    activation check (no server.app -> "not yet implemented"). With the
+    FastAPI app now present, the CLI delegates straight into serve(),
+    so we mock it to avoid actually binding a socket inside the test
+    process.
+    """
+    captured: dict[str, object] = {}
+
+    def fake_serve(*, host: str, port: int, open_browser: bool) -> None:
+        captured["host"] = host
+        captured["port"] = port
+        captured["open_browser"] = open_browser
+
+    monkeypatch.setattr("aitap.server.app.serve", fake_serve)
     result = runner.invoke(app, ["ui", "--port", "9001", "--no-browser"])
     assert result.exit_code == 0, result.output
-    assert "not yet implemented" in result.stderr
+    assert captured == {"host": "127.0.0.1", "port": 9001, "open_browser": False}
 
 
 def test_diff_help(runner: CliRunner) -> None:
@@ -299,10 +315,24 @@ def test_diff_help(runner: CliRunner) -> None:
         assert arg in clean
 
 
-def test_diff_stub_runs(runner: CliRunner) -> None:
+def test_diff_invokes_history_module(runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`aitap diff` now dispatches into aitap.store.history.diff_versions.
+
+    Before wt/api-prompts the stub printed "not yet implemented"; with
+    history shipping, the real handler runs. We mock the entry point so
+    the test doesn't touch a real .aitap/ DB.
+    """
+    captured: dict[str, object] = {}
+
+    def fake_diff_versions(prompt: str, v1: int, v2: int) -> None:
+        captured["prompt"] = prompt
+        captured["v1"] = v1
+        captured["v2"] = v2
+
+    monkeypatch.setattr("aitap.store.history.diff_versions", fake_diff_versions)
     result = runner.invoke(app, ["diff", "summarize_email", "1", "3"])
     assert result.exit_code == 0, result.output
-    assert "not yet implemented" in result.stderr
+    assert captured == {"prompt": "summarize_email", "v1": 1, "v2": 3}
 
 
 def test_rollback_help(runner: CliRunner) -> None:
@@ -313,10 +343,25 @@ def test_rollback_help(runner: CliRunner) -> None:
     assert "VERSION" in clean
 
 
-def test_rollback_stub_runs(runner: CliRunner) -> None:
+def test_rollback_invokes_history_module(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`aitap rollback` now dispatches into aitap.store.history.rollback_version.
+
+    The --yes flag propagates as `skip_confirm=True` so users can
+    drive the command from scripts without an interactive prompt.
+    """
+    captured: dict[str, object] = {}
+
+    def fake_rollback_version(prompt: str, version: int, *, skip_confirm: bool) -> None:
+        captured["prompt"] = prompt
+        captured["version"] = version
+        captured["skip_confirm"] = skip_confirm
+
+    monkeypatch.setattr("aitap.store.history.rollback_version", fake_rollback_version)
     result = runner.invoke(app, ["rollback", "summarize_email", "2", "--yes"])
     assert result.exit_code == 0, result.output
-    assert "not yet implemented" in result.stderr
+    assert captured == {"prompt": "summarize_email", "version": 2, "skip_confirm": True}
 
 
 def test_stub_does_not_swallow_real_import_errors(monkeypatch: pytest.MonkeyPatch) -> None:
