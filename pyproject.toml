@@ -46,10 +46,10 @@ openai = ["openai>=1.30"]
 all = ["anthropic>=0.25", "openai>=1.30"]
 
 [project.urls]
-Homepage = "https://github.com/aitap/aitap"
-Repository = "https://github.com/aitap/aitap"
-Documentation = "https://aitap.github.io/aitap"
-Issues = "https://github.com/aitap/aitap/issues"
+Homepage = "https://github.com/Vikingboat666/AItap"
+Repository = "https://github.com/Vikingboat666/AItap"
+Documentation = "https://Vikingboat666.github.io/AItap"
+Issues = "https://github.com/Vikingboat666/AItap/issues"
 
 [project.scripts]
 aitap = "aitap.cli:app"

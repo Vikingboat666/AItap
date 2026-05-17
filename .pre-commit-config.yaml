@@ -28,3 +28,12 @@ repos:
           - pydantic-settings>=2.2
           - typer>=0.12
           - fastapi>=0.110
+
+  - repo: local
+    hooks:
+      - id: no-hardcoded-local-paths
+        name: block hardcoded developer local paths
+        language: pygrep
+        entry: 'C:[\\/]Users[\\/]\S+|D:[\\/](?:AIcoding|aitap-)|/home/[a-z]+/[A-Za-z]|/Users/[A-Za-z]+/[A-Za-z]'
+        types: [text]
+        exclude: ^(\.gitignore|\.pre-commit-config\.yaml|CLAUDE\.md|uv\.lock|.*\.ipynb)$
