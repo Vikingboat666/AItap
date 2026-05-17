@@ -216,11 +216,21 @@ export function Playground() {
     },
   });
 
+  // The cache for this query is the *only* source of truth for the
+  // optimistic feedback state — the backend has no GET /feedback today
+  // and the placeholder queryFn returns an empty object. The global
+  // `staleTime: 30_000` in client.ts would otherwise refetch after
+  // 30s and clobber the optimistic write we did in `onMutate`, making
+  // the user's thumbs/critique appear to vanish. Pin staleTime to
+  // Infinity so React Query never auto-refetches this key; we'll
+  // remove this override once a real GET /api/runs/{run_id}/feedback
+  // endpoint exists (M4) and we can trust the network response.
   const ratingByCase = useQuery<Record<number, -1 | 0 | 1 | null>>({
     queryKey: ["feedback", activeRun?.run_id ?? ""],
     queryFn: () => Promise.resolve({}),
     enabled: !!activeRun,
     initialData: {},
+    staleTime: Number.POSITIVE_INFINITY,
   });
 
   const handleFeedback = useCallback(
@@ -391,8 +401,19 @@ function TargetCard({
             <div className="mb-1 text-[11px] uppercase text-ink-400">
               run mode
             </div>
+            {/*
+              Segment mode is deliberately omitted from the selector
+              until the node-pick UI lands (M5). The runMutation logic
+              below still understands `mode === "segment"` and sends
+              `pipeline_segment: []`, but exposing that option here
+              would let users dispatch a zero-node segment run (the
+              backend treats `[]` as "run no nodes" — succeeds with
+              empty output, which looks like a silent bug). Re-add
+              `"segment"` to the array once the UI can supply concrete
+              node IDs.
+            */}
             <div className="flex gap-1">
-              {(["node", "segment", "end-to-end"] as const).map((m) => (
+              {(["node", "end-to-end"] as const).map((m) => (
                 <button
                   key={m}
                   type="button"

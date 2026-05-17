@@ -1,13 +1,23 @@
 /**
- * Per-case results renderer shared by Playground (live run output) and
- * History (diff modal). Renders one row per `RunOutput` and exposes
- * optional thumbs/critique controls so the parent owns mutation logic
- * but the visual stays consistent.
+ * Per-case results renderer used by Playground (live run output).
+ * Renders one row per `RunOutput` and exposes optional thumbs/critique
+ * controls so the parent owns mutation logic but the visual stays
+ * consistent.
  *
- * The component is intentionally presentational — it doesn't import
- * react-query directly. The Playground attaches an optimistic feedback
- * mutation and passes the loading flag through; this keeps the
- * component re-usable for the read-only History view.
+ * Reuse status: this component is *currently* only imported by
+ * Playground. It was designed to be lifted into History's diff modal
+ * for read-only per-case output panes, but the `/api/history`
+ * endpoint does not yet expose per-case outputs (it returns only
+ * version metadata: `version`, `avg_score`, `note`, `parent_version`).
+ * Once that endpoint surfaces per-case outputs (M4), History should
+ * import ResultsTable for its diff panes; until then the History
+ * DiffModal renders metadata-only `DiffPane` components.
+ *
+ * The component stays intentionally presentational — it doesn't
+ * import react-query directly. The Playground attaches an optimistic
+ * feedback mutation and passes the loading flag through; this keeps
+ * the component drop-in usable for read-only contexts (e.g., History)
+ * later by simply omitting the `onFeedback` prop.
  */
 
 import { useState } from "react";
