@@ -7,12 +7,11 @@ import ReactFlow, {
   type Node,
 } from "reactflow";
 
-import type {
-  Pipeline,
-  PipelineEdge,
-  PipelineNode,
-  PromptSummary,
-} from "../../api/types";
+import type { EdgeKind } from "../../api/generated/models/EdgeKind";
+import type { Pipeline } from "../../api/generated/models/Pipeline";
+import type { PipelineEdge } from "../../api/generated/models/PipelineEdge";
+import type { PipelineNode } from "../../api/generated/models/PipelineNode";
+import type { PromptSummary } from "../../api/generated/models/PromptSummary";
 
 interface DagViewProps {
   pipeline: Pipeline;
@@ -23,6 +22,33 @@ interface DagViewProps {
 
 const NODE_WIDTH = 220;
 const NODE_HEIGHT = 64;
+
+/**
+ * Map each EdgeKind to a visual style. The contract distinguishes:
+ *   - variable / lc_pipe / function : solid blue line (we statically
+ *     resolved a real dataflow edge)
+ *   - llamaindex / unresolved       : dashed grey line, animated (we
+ *     guessed; user should verify)
+ *
+ * Centralising this in one switch keeps the legend on the page in sync
+ * with what ReactFlow actually renders.
+ */
+function styleForKind(kind: EdgeKind): {
+  stroke: string;
+  strokeDasharray?: string;
+  animated: boolean;
+} {
+  switch (kind) {
+    case "variable":
+    case "lc_pipe":
+    case "function":
+      return { stroke: "#475dff", animated: false };
+    case "llamaindex":
+    case "unresolved":
+    default:
+      return { stroke: "#b9c1cf", strokeDasharray: "4 4", animated: true };
+  }
+}
 
 function layout(
   pipeline: Pipeline,
@@ -129,20 +155,20 @@ export function DagView({
 
   const edges: Edge[] = useMemo(
     () =>
-      pipeline.edges.map((e, i) => ({
-        id: `${e.source}->${e.target}-${i}`,
-        source: e.source,
-        target: e.target,
-        label: e.via ?? e.kind,
-        animated: e.kind === "unresolved",
-        style: {
-          stroke: e.kind === "unresolved" ? "#b9c1cf" : "#475dff",
-          strokeDasharray: e.kind === "unresolved" ? "4 4" : undefined,
-        },
-        labelStyle: { fontSize: 10, fill: "#5e6678" },
-        markerEnd: { type: MarkerType.ArrowClosed, color: "#475dff" },
-        data: e,
-      })),
+      pipeline.edges.map((e, i) => {
+        const { stroke, strokeDasharray, animated } = styleForKind(e.kind);
+        return {
+          id: `${e.source}->${e.target}-${i}`,
+          source: e.source,
+          target: e.target,
+          label: e.via ?? e.kind,
+          animated,
+          style: { stroke, strokeDasharray },
+          labelStyle: { fontSize: 10, fill: "#5e6678" },
+          markerEnd: { type: MarkerType.ArrowClosed, color: stroke },
+          data: e,
+        };
+      }),
     [pipeline],
   );
 

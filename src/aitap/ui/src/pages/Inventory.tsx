@@ -2,12 +2,12 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
-import { api } from "../api/client";
-import type {
-  PipelineSummary,
-  PromptSummary,
-} from "../api/types";
+import { apiClient } from "../api/client";
+import type { PipelineSummary } from "../api/generated/models/PipelineSummary";
+import type { PromptSummary } from "../api/generated/models/PromptSummary";
 import { Badge, Card, CardHeader, EmptyState } from "../components/primitives";
+import { ErrorState } from "../components/feedback";
+import { ListSkeleton } from "../components/skeletons";
 import { clsx } from "../lib/clsx";
 
 type Tab = "prompts" | "pipelines";
@@ -16,11 +16,11 @@ export function Inventory() {
   const [tab, setTab] = useState<Tab>("prompts");
   const promptsQ = useQuery({
     queryKey: ["prompts"],
-    queryFn: api.listPrompts,
+    queryFn: () => apiClient.prompts.listPromptsApiPromptsGet(),
   });
   const pipelinesQ = useQuery({
     queryKey: ["pipelines"],
-    queryFn: api.listPipelines,
+    queryFn: () => apiClient.pipelines.listPipelinesApiPipelinesGet(),
   });
 
   return (
@@ -43,11 +43,17 @@ export function Inventory() {
       {tab === "prompts" ? (
         <PromptList
           isLoading={promptsQ.isLoading}
+          isError={promptsQ.isError}
+          error={promptsQ.error}
+          onRetry={() => void promptsQ.refetch()}
           prompts={promptsQ.data?.prompts ?? []}
         />
       ) : (
         <PipelineList
           isLoading={pipelinesQ.isLoading}
+          isError={pipelinesQ.isError}
+          error={pipelinesQ.error}
+          onRetry={() => void pipelinesQ.refetch()}
           pipelines={pipelinesQ.data?.pipelines ?? []}
         />
       )}
@@ -84,13 +90,28 @@ function TabButton({
 
 function PromptList({
   isLoading,
+  isError,
+  error,
+  onRetry,
   prompts,
 }: {
   isLoading: boolean;
+  isError: boolean;
+  error: unknown;
+  onRetry: () => void;
   prompts: PromptSummary[];
 }) {
   if (isLoading) {
-    return <Card className="p-6 text-sm text-ink-500">loading prompts…</Card>;
+    return <ListSkeleton label="loading prompts…" rows={4} />;
+  }
+  if (isError) {
+    return (
+      <ErrorState
+        title="couldn't load prompts"
+        error={error}
+        onRetry={onRetry}
+      />
+    );
   }
   if (prompts.length === 0) {
     return (
@@ -104,7 +125,7 @@ function PromptList({
     <Card>
       <CardHeader
         title="discovered prompts"
-        subtitle="from L1 scan of project tree (mock)"
+        subtitle="from the latest aitap scan"
       />
       <ul className="divide-y divide-ink-100">
         {prompts.map((p) => (
@@ -150,13 +171,28 @@ function PromptRow({ prompt: p }: { prompt: PromptSummary }) {
 
 function PipelineList({
   isLoading,
+  isError,
+  error,
+  onRetry,
   pipelines,
 }: {
   isLoading: boolean;
+  isError: boolean;
+  error: unknown;
+  onRetry: () => void;
   pipelines: PipelineSummary[];
 }) {
   if (isLoading) {
-    return <Card className="p-6 text-sm text-ink-500">loading pipelines…</Card>;
+    return <ListSkeleton label="loading pipelines…" rows={3} />;
+  }
+  if (isError) {
+    return (
+      <ErrorState
+        title="couldn't load pipelines"
+        error={error}
+        onRetry={onRetry}
+      />
+    );
   }
   if (pipelines.length === 0) {
     return (
