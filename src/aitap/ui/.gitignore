@@ -3,4 +3,3 @@ dist/
 .vite/
 *.log
 .eslintcache
-src/api/generated/

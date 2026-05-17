@@ -69,6 +69,9 @@ node_modules/
 # Vite build output bundled into wheel
 src/aitap/server/static/
 
+# OpenAPI schema dumped locally to feed `pnpm gen:api` (reproducible from app.openapi())
+openapi.json
+
 # Docs build
 site/
 
