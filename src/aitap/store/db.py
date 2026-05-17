@@ -166,9 +166,24 @@ MIGRATIONS: list = []
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
-    """Open a SQLite connection with sane defaults for aitap."""
+    """Open a SQLite connection with sane defaults for aitap.
+
+    ``check_same_thread=False`` is required so the FastAPI route layer can
+    safely reuse a connection across a request's lifecycle: starlette/anyio
+    runs sync dependencies and sync endpoints in the threadpool, and a
+    single request may be resumed on a different worker thread between the
+    dependency's ``yield`` and its cleanup. Per-request ``conn.close()``
+    plus our autocommit + WAL settings keep concurrent requests safe —
+    we're not handing the *same* connection to two requests, we're just
+    letting the one request travel between worker threads without
+    tripping sqlite3's safety check.
+    """
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path, isolation_level=None)  # autocommit
+    conn = sqlite3.connect(
+        db_path,
+        isolation_level=None,  # autocommit
+        check_same_thread=False,
+    )
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")

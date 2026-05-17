@@ -23,9 +23,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import Literal, cast
+from typing import Annotated, Literal, cast
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from aitap.config import Settings
 from aitap.deep import pricing
@@ -34,28 +34,31 @@ from aitap.scanner.models import (
     Provider,
     ProviderEvidence,
 )
-from aitap.server.deps import SettingsDep, get_conn
 from aitap.server.routes import (
     CostEstimateResponse,
     SettingsResponse,
     SettingsUpdate,
 )
+from aitap.server.routes._deps import get_db, get_settings
 
-router = APIRouter(prefix="/api/settings", tags=["settings"])
+router = APIRouter(tags=["settings"])
 
 
-# In-memory override store. Keyed by attribute name → new value. Wiping the
+# In-memory override store. Keyed by attribute name -> new value. Wiping the
 # process resets — by design for Wave 3 where YAML persistence is owned by
 # the prompts API worktree.
 _MUTABLE_STATE: dict[str, object] = {}
 
 
-@router.get("", response_model=SettingsResponse)
-def get_settings_endpoint(settings: SettingsDep) -> SettingsResponse:
+@router.get("/settings", response_model=SettingsResponse)
+def get_settings_endpoint(
+    settings: Annotated[Settings, Depends(get_settings)],
+    conn: Annotated[sqlite3.Connection, Depends(get_db)],
+) -> SettingsResponse:
     """Render the effective :class:`Settings` + detected providers as JSON."""
     provider_name, model, judge_model = _effective_provider(settings)
     cost = _effective_cost(settings)
-    providers = _read_detected_providers(settings)
+    providers = _read_detected_providers(conn)
     return SettingsResponse(
         provider=_coerce_provider(provider_name),
         model=model,
@@ -66,10 +69,11 @@ def get_settings_endpoint(settings: SettingsDep) -> SettingsResponse:
     )
 
 
-@router.put("", response_model=SettingsResponse)
+@router.put("/settings", response_model=SettingsResponse)
 def put_settings(
     payload: SettingsUpdate,
-    settings: SettingsDep,
+    settings: Annotated[Settings, Depends(get_settings)],
+    conn: Annotated[sqlite3.Connection, Depends(get_db)],
 ) -> SettingsResponse:
     """Apply a partial settings update.
 
@@ -88,14 +92,15 @@ def put_settings(
         _MUTABLE_STATE["cost_per_run_usd"] = float(payload.cost_per_run_usd)
     if payload.cost_per_session_usd is not None:
         _MUTABLE_STATE["cost_per_session_usd"] = float(payload.cost_per_session_usd)
-    return get_settings_endpoint(settings)
+    return get_settings_endpoint(settings, conn)
 
 
-@router.get("/cost-estimate", response_model=CostEstimateResponse)
+@router.get("/settings/cost-estimate", response_model=CostEstimateResponse)
 def get_cost_estimate(
     prompt_id: str,
     model: str,
-    settings: SettingsDep,
+    settings: Annotated[Settings, Depends(get_settings)],
+    conn: Annotated[sqlite3.Connection, Depends(get_db)],
 ) -> CostEstimateResponse:
     """Estimate cost of running a prompt against *model* once.
 
@@ -108,7 +113,7 @@ def get_cost_estimate(
     saw the site but no version row was ever created) and 400 when the
     model isn't in our pricebook.
     """
-    template_text = _load_template_text(settings, prompt_id)
+    template_text = _load_template_text(conn, prompt_id)
     if template_text is None:
         raise HTTPException(
             status_code=404,
@@ -191,29 +196,28 @@ def _effective_cost(settings: Settings) -> tuple[float, float]:
     return per_run, per_session
 
 
-def _read_detected_providers(settings: Settings) -> list[ProviderEvidence]:
+def _read_detected_providers(conn: sqlite3.Connection) -> list[ProviderEvidence]:
     """Read ``providers_detected`` rows and reify them as ProviderEvidence.
 
-    The DB may not exist yet (fresh project, no scan yet); we treat that
-    as "no providers detected" rather than 500ing the settings endpoint.
+    The schema is created on every request by ``get_db``'s ``init_db``
+    call, so the table is guaranteed to exist; an empty list is the
+    expected response for a fresh project that hasn't run a scan yet.
     """
-    if not settings.db_path.exists():
-        return []
     out: list[ProviderEvidence] = []
-    with get_conn(settings) as conn:
-        try:
-            cur = conn.execute(
-                """
-                SELECT provider, source, file, line_start, key_var_name
-                FROM providers_detected
-                ORDER BY detected_at
-                """
-            )
-        except sqlite3.OperationalError:
-            # init_db() should have created the table — but defensively
-            # return [] if it didn't (e.g., migration mid-flight).
-            return []
-        rows = cur.fetchall()
+    try:
+        cur = conn.execute(
+            """
+            SELECT provider, source, file, line_start, key_var_name
+            FROM providers_detected
+            ORDER BY detected_at
+            """
+        )
+    except sqlite3.OperationalError:
+        # Defensive: should never trip after init_db, but failing soft
+        # here keeps the settings endpoint healthy if the DDL ever
+        # regresses mid-migration.
+        return []
+    rows = cur.fetchall()
     for row in rows:
         try:
             ev = ProviderEvidence(
@@ -267,34 +271,31 @@ def _coerce_source(value: str) -> Literal[".env", "config", "code"]:
     return "config"
 
 
-def _load_template_text(settings: Settings, prompt_id: str) -> str | None:
+def _load_template_text(conn: sqlite3.Connection, prompt_id: str) -> str | None:
     """Concatenate the template text of the latest version of *prompt_id*.
 
     Falls back to the ``prompts.payload_json`` if no ``prompt_versions``
     row exists yet (the scanner inserts into ``prompts`` but not
     ``prompt_versions``).
     """
-    if not settings.db_path.exists():
+    cur = conn.execute(
+        """
+        SELECT template_json
+        FROM prompt_versions
+        WHERE prompt_id = ?
+        ORDER BY version DESC
+        LIMIT 1
+        """,
+        (prompt_id,),
+    )
+    row = cur.fetchone()
+    if row is not None:
+        return _flatten_template_json(cast(str, row["template_json"]))
+    cur = conn.execute("SELECT payload_json FROM prompts WHERE id = ?", (prompt_id,))
+    prompt_row = cur.fetchone()
+    if prompt_row is None:
         return None
-    with get_conn(settings) as conn:
-        cur = conn.execute(
-            """
-            SELECT template_json
-            FROM prompt_versions
-            WHERE prompt_id = ?
-            ORDER BY version DESC
-            LIMIT 1
-            """,
-            (prompt_id,),
-        )
-        row = cur.fetchone()
-        if row is not None:
-            return _flatten_template_json(cast(str, row["template_json"]))
-        cur = conn.execute("SELECT payload_json FROM prompts WHERE id = ?", (prompt_id,))
-        prompt_row = cur.fetchone()
-        if prompt_row is None:
-            return None
-        payload = cast(str, prompt_row["payload_json"])
+    payload = cast(str, prompt_row["payload_json"])
     return _flatten_payload_json(payload)
 
 

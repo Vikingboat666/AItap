@@ -5,26 +5,27 @@ ends up touching the ``runs``, ``scores``, ``feedback``, or
 ``prompt_versions`` tables.
 
 It deliberately does **not** execute prompts itself. The single source of
-truth for "run a prompt against a dataset" is :mod:`aitap.playground.runner`
-(owned by the ``wt/runner`` worktree). When that module isn't merged yet,
+truth for "run a prompt against a dataset" is :mod:`aitap.playground.dispatch`
+(an adapter owned by this worktree that wires the ``wt/runner`` runner module
+into the API request lifecycle). When that adapter is absent
 :func:`_invoke_runner_safely` records the run in the ``running`` status and
-returns immediately — the contract still gets exercised end-to-end and
-``wt/runner`` can later attach.
+returns immediately so the contract still exercises end-to-end.
 
-All endpoints depend on a :class:`aitap.config.Settings` instance and a
-SQLite connection factory. Both are injected via FastAPI's ``Depends`` so
-tests can swap them with a tmp_path-rooted Settings without monkeypatching.
+All endpoints depend on a :class:`aitap.config.Settings` instance and an
+``sqlite3.Connection`` injected via FastAPI's ``Depends``. Tests can swap
+the Settings via ``app.dependency_overrides[get_settings]`` so the suite
+runs against a tmp_path-rooted project without env-var monkeypatching.
 """
 
 from __future__ import annotations
 
-from typing import Literal, cast
+import sqlite3
+from typing import Annotated, Literal, cast
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from aitap.config import Settings
 from aitap.iterate import iterate_one_round
-from aitap.server.deps import SettingsDep, get_conn
 from aitap.server.routes import (
     FeedbackCreate,
     FeedbackResponse,
@@ -36,52 +37,61 @@ from aitap.server.routes import (
     RunOutput,
     RunResponse,
 )
+from aitap.server.routes._deps import get_db, get_settings
+from aitap.store import db as store_db
 from aitap.store import runs as runs_dao
 
-router = APIRouter(prefix="/api/runs", tags=["runs"])
+router = APIRouter(tags=["runs"])
 
 # Narrow strings the API layer surfaces, kept in sync with the contract.
 _RUN_STATUS_VALUES: frozenset[str] = frozenset({"running", "done", "failed"})
 _TARGET_KIND_VALUES: frozenset[str] = frozenset({"prompt", "pipeline"})
 
 
-@router.post("", response_model=RunResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post("/runs", response_model=RunResponse, status_code=status.HTTP_202_ACCEPTED)
 def create_run(
     payload: RunCreate,
-    settings: SettingsDep,
+    settings: Annotated[Settings, Depends(get_settings)],
+    conn: Annotated[sqlite3.Connection, Depends(get_db)],
 ) -> RunResponse:
     """Queue a new run.
 
     Wave 3 contract:
     - Validate the payload (pydantic handles shape).
     - Insert a ``runs`` row in the *running* state.
-    - Attempt to hand off to :mod:`aitap.playground.runner` via a lazy
-      import; if the runner module isn't available yet, leave the row in
-      *running* and let ``wt/runner`` mark it *done* once it lands.
+    - Attempt to hand off to :mod:`aitap.playground.dispatch` via a lazy
+      import. The adapter is responsible for marking the run *done* /
+      *failed* and stamping the final cost. If the module is unavailable
+      we leave the row in *running* so a later worktree merge can attach.
     """
     run_id = runs_dao.new_run_id(payload.target_id, payload.target_version)
     parameters_json = runs_dao.serialize_parameters(payload.parameters)
 
-    with get_conn(settings) as conn:
-        runs_dao.insert_run(
-            conn,
-            run_id=run_id,
-            target_kind=payload.target_kind,
-            target_id=payload.target_id,
-            target_version=payload.target_version,
-            dataset_id=payload.dataset_id,
-            provider=payload.provider.value,
-            model=payload.model,
-            parameters_json=parameters_json,
-        )
+    runs_dao.insert_run(
+        conn,
+        run_id=run_id,
+        target_kind=payload.target_kind,
+        target_id=payload.target_id,
+        target_version=payload.target_version,
+        dataset_id=payload.dataset_id,
+        provider=payload.provider.value,
+        model=payload.model,
+        parameters_json=parameters_json,
+    )
 
     final_status = _invoke_runner_safely(settings, run_id, payload)
-    return RunResponse(run_id=run_id, status=final_status)
+    # ``_invoke_runner_safely`` opens its own connection (the adapter runs
+    # outside the request handler's session because it may close/reopen
+    # for status persistence). Re-read the row through *our* connection so
+    # the response reflects any status mutation the adapter performed.
+    row = runs_dao.read_run(conn, run_id)
+    surfaced = _coerce_status(row["status"]) if row is not None else final_status
+    return RunResponse(run_id=run_id, status=surfaced)
 
 
-@router.get("", response_model=RunListResponse)
+@router.get("/runs", response_model=RunListResponse)
 def list_runs_endpoint(
-    settings: SettingsDep,
+    conn: Annotated[sqlite3.Connection, Depends(get_db)],
     target_id: str | None = None,
     limit: int = 50,
 ) -> RunListResponse:
@@ -91,8 +101,7 @@ def list_runs_endpoint(
     table. The frontend's default page size is 50.
     """
     capped = max(1, min(int(limit), 200))
-    with get_conn(settings) as conn:
-        rows = runs_dao.list_runs(conn, target_id=target_id, limit=capped)
+    rows = runs_dao.list_runs(conn, target_id=target_id, limit=capped)
     return RunListResponse(
         runs=[
             RunResponse(run_id=str(row["id"]), status=_coerce_status(row["status"])) for row in rows
@@ -100,20 +109,20 @@ def list_runs_endpoint(
     )
 
 
-@router.get("/{run_id}", response_model=RunDetailResponse)
+@router.get("/runs/{run_id}", response_model=RunDetailResponse)
 def get_run(
     run_id: str,
-    settings: SettingsDep,
+    conn: Annotated[sqlite3.Connection, Depends(get_db)],
 ) -> RunDetailResponse:
     """Fetch one run + a placeholder outputs list.
 
-    Wave 3 doesn't persist outputs to the DB (no ``outputs`` table); we
-    return an empty list so the response shape matches the contract while
-    ``wt/runner`` decides where outputs land (likely a JSONL inside
-    ``.aitap/runs/<id>/``).
+    Wave 3 doesn't persist per-case outputs to the DB (no ``outputs``
+    table); we return an empty list so the response shape matches the
+    contract. The :mod:`aitap.playground.dispatch` adapter has a TODO to
+    write outputs as a JSONL sidecar under ``.aitap/runs/<id>/`` in M4 —
+    once that lands :func:`_load_outputs` will read from there.
     """
-    with get_conn(settings) as conn:
-        row = runs_dao.read_run(conn, run_id)
+    row = runs_dao.read_run(conn, run_id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"run {run_id!r} not found")
     return RunDetailResponse(
@@ -130,40 +139,39 @@ def get_run(
 
 
 @router.post(
-    "/{run_id}/feedback",
+    "/runs/{run_id}/feedback",
     response_model=FeedbackResponse,
     status_code=status.HTTP_201_CREATED,
 )
 def post_feedback(
     run_id: str,
     payload: FeedbackCreate,
-    settings: SettingsDep,
+    conn: Annotated[sqlite3.Connection, Depends(get_db)],
 ) -> FeedbackResponse:
     """Attach a feedback record to a run case."""
-    with get_conn(settings) as conn:
-        run_row = runs_dao.read_run(conn, run_id)
-        if run_row is None:
-            raise HTTPException(status_code=404, detail=f"run {run_id!r} not found")
-        feedback_id = runs_dao.insert_feedback(
-            conn,
-            run_id=run_id,
-            case_index=payload.case_index,
-            rating=payload.rating,
-            ideal_answer=payload.ideal_answer,
-            critique=payload.critique,
-        )
+    run_row = runs_dao.read_run(conn, run_id)
+    if run_row is None:
+        raise HTTPException(status_code=404, detail=f"run {run_id!r} not found")
+    feedback_id = runs_dao.insert_feedback(
+        conn,
+        run_id=run_id,
+        case_index=payload.case_index,
+        rating=payload.rating,
+        ideal_answer=payload.ideal_answer,
+        critique=payload.critique,
+    )
     return FeedbackResponse(feedback_id=feedback_id)
 
 
 @router.post(
-    "/{run_id}/iterate",
+    "/runs/{run_id}/iterate",
     response_model=IterateResponse,
     status_code=status.HTTP_201_CREATED,
 )
 def post_iterate(
     run_id: str,
     payload: IterateRequest,
-    settings: SettingsDep,
+    conn: Annotated[sqlite3.Connection, Depends(get_db)],
 ) -> IterateResponse:
     """Fire one round of self-iteration based on collected feedback.
 
@@ -176,8 +184,7 @@ def post_iterate(
     """
     _ = payload  # accepted for the contract; M4 will dispatch on it
     try:
-        with get_conn(settings) as conn:
-            outcome = iterate_one_round(conn, run_id=run_id)
+        outcome = iterate_one_round(conn, run_id=run_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return IterateResponse(
@@ -199,44 +206,51 @@ def _invoke_runner_safely(
     run_id: str,
     payload: RunCreate,
 ) -> Literal["running", "done", "failed"]:
-    """Hand off to :mod:`aitap.playground.runner` if it's importable.
+    """Hand off to :mod:`aitap.playground.dispatch` if it's importable.
 
     Returns the run status to surface in the response:
-    - ``"done"`` when the runner module ran the prompt synchronously.
-    - ``"running"`` when the runner module isn't available or chose to
-      run async — the run row stays in ``running`` until something
-      else (typically the runner itself) updates it.
+    - ``"done"`` when the adapter ran the prompt synchronously and
+      persisted a terminal status.
+    - ``"running"`` when the adapter module isn't available (e.g.,
+      a downstream consumer installs aitap without playground deps).
 
-    The intentional lack of LLM execution here keeps this worktree free
-    of provider deps. We do **not** swallow exceptions raised by an
-    available runner — those should propagate so callers see real failures.
+    The intentional lack of LLM execution here keeps this module thin —
+    the adapter owns provider construction, dataset loading, and
+    persistence. We do **not** swallow exceptions raised by the adapter;
+    they propagate so callers see real failures.
     """
-    # Lazy module probe so installing aitap without the playground
-    # worktree's files still lets this package import. ``find_spec`` is
-    # preferred over try/except ImportError because it lets a real bug
-    # inside an existing module surface loudly rather than being silently
-    # misread as "not implemented yet."
+    # Lazy module probe so installing aitap without the dispatch module
+    # still lets this package import. ``find_spec`` is preferred over
+    # try/except ImportError because it lets a real bug inside an
+    # existing module surface loudly rather than being silently misread
+    # as "not implemented yet."
     import importlib
     from importlib.util import find_spec
 
-    if find_spec("aitap.playground.runner") is None:
+    if find_spec("aitap.playground.dispatch") is None:
         return "running"
 
-    playground_runner = importlib.import_module("aitap.playground.runner")
-    invoke = getattr(playground_runner, "invoke_run", None)
+    dispatch_module = importlib.import_module("aitap.playground.dispatch")
+    invoke = getattr(dispatch_module, "invoke_run", None)
     if invoke is None:
         return "running"
 
     # invoke_run is expected to handle its own persistence (status, cost,
     # outputs). If the contract evolves the route layer can be updated
-    # independently — we don't try to second-guess what the runner does.
+    # independently — we don't try to second-guess what the adapter does.
     try:
         invoke(settings=settings, run_id=run_id, payload=payload)
     except Exception:
         # Mark the run failed so the UI doesn't show a perpetually-running
-        # request when the runner blows up. Re-raise so FastAPI returns 500.
-        with get_conn(settings) as conn:
-            runs_dao.update_run_status(conn, run_id, status="failed", finished=True)
+        # request when the adapter blows up. Open a fresh connection
+        # because the request-scoped one may be in an unknown state after
+        # the adapter's own DB activity. Re-raise so FastAPI returns 500.
+        failover_conn = store_db.connect(settings.db_path)
+        try:
+            store_db.init_db(failover_conn)
+            runs_dao.update_run_status(failover_conn, run_id, status="failed", finished=True)
+        finally:
+            failover_conn.close()
         raise
     return "done"
 
@@ -244,10 +258,11 @@ def _invoke_runner_safely(
 def _load_outputs() -> list[RunOutput]:
     """Placeholder — Wave 3 doesn't persist per-case outputs to SQLite.
 
-    Once ``wt/runner`` lands and we decide where outputs live (JSONL
-    sidecars under ``.aitap/runs/<id>/`` is the current direction), this
-    helper will read them. For now we return an empty list so the response
-    shape stays contract-correct.
+    The dispatch adapter currently writes outputs to a JSONL sidecar
+    under ``.aitap/runs/<id>/outputs.jsonl`` (see
+    :mod:`aitap.playground.dispatch`). M4 will teach this helper to read
+    that file; for now the response keeps outputs empty so the shape
+    stays contract-correct.
     """
     return []
 

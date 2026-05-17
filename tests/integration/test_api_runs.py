@@ -34,9 +34,20 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from aitap.config import Settings
+from aitap.deep.testing import MockLLMClient
+from aitap.playground import dispatch as playground_dispatch
+from aitap.scanner.models import (
+    CodeLocation,
+    Confidence,
+    Message,
+    PromptSite,
+    Provider,
+    Role,
+    TemplateKind,
+)
 from aitap.server.app import create_app
-from aitap.server.deps import get_conn, get_settings
 from aitap.server.routes import settings as settings_routes
+from aitap.server.routes._deps import get_db, get_settings
 from aitap.store import db as store_db
 
 
@@ -71,6 +82,37 @@ def _reset_mutable_state() -> Iterator[None]:
     settings_routes._MUTABLE_STATE.clear()
 
 
+@pytest.fixture(autouse=True)
+def _mock_invoke_run_client() -> Iterator[None]:
+    """Inject a :class:`MockLLMClient` into ``invoke_run`` for the test run.
+
+    Without this every ``POST /api/runs`` would try to construct a real
+    Anthropic client. Construction itself is cheap (no network) but the
+    test suite must stay hermetic and provider-key-free. Tests that care
+    about actual chat behaviour can override this fixture locally; the
+    default ``cases=[]`` payload makes zero calls anyway, so the mock
+    just covers the "construction doesn't talk to the network" promise.
+    """
+    playground_dispatch.set_client_factory(lambda provider, model: MockLLMClient(model=model))
+    yield
+    playground_dispatch.set_client_factory(None)
+
+
+@pytest.fixture(autouse=True)
+def _seed_default_prompts(settings: Settings) -> None:
+    """Pre-seed prompt rows that every test's ``_run_payload`` references.
+
+    Wave 3 ``invoke_run`` resolves ``payload.target_id`` against the
+    ``prompts`` table and raises (causing the run to flip to ``failed``)
+    when no row exists. The integration suite uses synthetic ids
+    (``prompt-abc``, ``prompt-aaa``, ``prompt-bbb``, ``prompt-cost``) so
+    we seed all of them up front rather than scatter ``_seed_prompt``
+    calls across every test.
+    """
+    for prompt_id in ("prompt-abc", "prompt-aaa", "prompt-bbb"):
+        _seed_prompt(settings, prompt_id)
+
+
 @pytest.fixture()
 async def client(app_with_settings) -> AsyncIterator[AsyncClient]:
     transport = ASGITransport(app=app_with_settings)
@@ -97,12 +139,38 @@ def _open_conn(settings: Settings) -> sqlite3.Connection:
     return conn
 
 
+def _build_prompt_site(prompt_id: str, name: str = "test_prompt") -> PromptSite:
+    """Construct a minimal valid PromptSite the dispatch adapter can load.
+
+    The fields kept here are the union of what
+    :func:`aitap.playground.dispatch._load_prompt_site` validates and
+    what :func:`aitap.playground.runner.run_prompt` reads — anything else
+    can stay defaulted.
+    """
+    return PromptSite(
+        id=prompt_id,
+        name=name,
+        provider=Provider.ANTHROPIC,
+        location=CodeLocation(file="x.py", line_start=1, line_end=5),
+        messages=[
+            Message(
+                role=Role.USER,
+                template_text="Hello, world.",
+                template_kind=TemplateKind.LITERAL,
+            )
+        ],
+        confidence=Confidence.HIGH,
+    )
+
+
 def _seed_prompt(settings: Settings, prompt_id: str = "prompt-abc") -> None:
-    """Insert a minimal ``prompts`` row so FK-bound writes don't 500.
+    """Insert a real PromptSite row so the dispatch adapter can resolve it.
 
     The scanner normally fills this in during ``aitap scan``; tests that
-    skip the scanner need to provide their own placeholder.
+    skip the scanner need to provide their own row whose
+    ``payload_json`` deserialises back into a valid PromptSite.
     """
+    site = _build_prompt_site(prompt_id)
     conn = _open_conn(settings)
     try:
         conn.execute(
@@ -110,9 +178,9 @@ def _seed_prompt(settings: Settings, prompt_id: str = "prompt-abc") -> None:
             INSERT OR IGNORE INTO prompts
                 (id, name, provider, file, line_start, line_end,
                  confidence, payload_json)
-            VALUES (?, 'test_prompt', 'anthropic', 'x.py', 1, 5, 'high', '{}')
+            VALUES (?, ?, 'anthropic', 'x.py', 1, 5, 'high', ?)
             """,
-            (prompt_id,),
+            (prompt_id, site.name, site.model_dump_json()),
         )
     finally:
         conn.close()
@@ -131,7 +199,10 @@ async def test_post_run_persists_row_and_returns_run_id(
     assert resp.status_code == 202, resp.text
     body = resp.json()
     assert "run_id" in body
-    assert body["status"] in {"running", "done"}
+    # After B3, the dispatch adapter runs synchronously: the run must be
+    # terminal by the time the route returns. ``done`` is the success path;
+    # a stuck-``running`` status would mean the adapter never executed.
+    assert body["status"] == "done"
 
     # The row landed in SQLite with our payload's metadata.
     conn = _open_conn(settings)
@@ -143,6 +214,8 @@ async def test_post_run_persists_row_and_returns_run_id(
         assert row["target_version"] == 1
         assert row["provider"] == "anthropic"
         assert row["model"] == "claude-sonnet-4-6"
+        assert row["status"] == "done"
+        assert row["finished_at"] is not None
         # parameters are stored as serialised JSON; round-trip the temperature.
         assert "0.2" in cast(str, row["parameters_json"])
     finally:
@@ -177,10 +250,16 @@ async def test_get_run_returns_detail_shape(client: AsyncClient) -> None:
     assert body["run_id"] == posted["run_id"]
     assert body["target_id"] == "prompt-abc"
     assert body["target_version"] == 1
-    assert body["status"] in {"running", "done", "failed"}
+    # The dispatch adapter persisted the terminal status before this GET.
+    assert body["status"] == "done"
+    # No cases on this payload, so the runner makes zero chat calls and
+    # the rolled-up cost stays at 0.0. The outputs list is the M4 sidecar
+    # path (see ``aitap.playground.dispatch.outputs_sidecar_path``); for
+    # now it's an empty placeholder.
     assert body["outputs"] == []
     assert body["cost_usd"] == 0.0
     assert body["started_at"]
+    assert body["finished_at"]
 
 
 # ---------------------------------------------------------------------------
@@ -562,13 +641,27 @@ async def test_cost_estimate_404_for_unknown_prompt(client: AsyncClient) -> None
 
 
 # ---------------------------------------------------------------------------
-# Smoke test for the deps helper itself
+# Smoke test for the shared deps helper itself
 # ---------------------------------------------------------------------------
 
 
-def test_get_conn_initialises_schema(settings: Settings) -> None:
-    """A direct call to get_conn must yield a connection with all tables ready."""
-    with get_conn(settings) as conn:
+def test_get_db_initialises_schema(settings: Settings) -> None:
+    """The shared ``get_db`` dependency must yield a connection with all tables ready.
+
+    ``get_db`` is a FastAPI yield-style dependency; we drive it manually
+    here (no Depends machinery) because the contract under test is
+    "schema is initialised on first connect" rather than the FastAPI
+    binding itself.
+    """
+    iterator = get_db(settings)
+    conn = next(iterator)
+    try:
         cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
         tables = {row["name"] for row in cur.fetchall()}
         assert {"runs", "scores", "feedback", "prompt_versions"}.issubset(tables)
+    finally:
+        # Exhaust the generator to trigger the ``finally`` close in get_db.
+        try:
+            next(iterator)
+        except StopIteration:
+            pass
