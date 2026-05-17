@@ -1,6 +1,6 @@
 # Parallel Worktree Missions
 
-This document tracks the parallel worktrees and the Claude prompts to bootstrap a session in each one. The full development plan lives at `C:\Users\1\.claude\plans\llm-humming-pike.md`.
+This document tracks the parallel worktrees and the Claude prompts to bootstrap a session in each one. The full development plan lives at `the project planning doc (kept locally, not in repo)`.
 
 ---
 
@@ -40,11 +40,11 @@ Wave-1 worktrees and branches were removed after merge; the briefs below are kep
 
 | Worktree | Branch | Path |
 |---|---|---|
-| Pipeline detection | `wt/dataflow` | `D:/AIcoding/aitap-dataflow` |
-| Local persistence | `wt/store` | `D:/AIcoding/aitap-store` |
-| Remote audit | `wt/audit` | `D:/AIcoding/aitap-audit` |
-| Provider clients | `wt/providers` | `D:/AIcoding/aitap-providers` |
-| L2 deep scanner | `wt/deep-scan` | `D:/AIcoding/aitap-deep-scan` |
+| Pipeline detection | `wt/dataflow` | `<workspace>/aitap-dataflow` |
+| Local persistence | `wt/store` | `<workspace>/aitap-store` |
+| Remote audit | `wt/audit` | `<workspace>/aitap-audit` |
+| Provider clients | `wt/providers` | `<workspace>/aitap-providers` |
+| L2 deep scanner | `wt/deep-scan` | `<workspace>/aitap-deep-scan` |
 
 **Coordination notes for Wave 2**
 
@@ -96,7 +96,7 @@ Wave-1 worktrees and branches were removed after merge; the briefs below are kep
 开始前请先读：
 1. CONTRACTS.md（理解契约边界）
 2. src/aitap/scanner/models.py（你输出的数据形状）
-3. C:\Users\1\.claude\plans\llm-humming-pike.md 中 M1 部分
+3. the project planning doc (kept locally, not in repo) 中 M1 部分
 
 实现过程中：
 - 严格不动 Out of scope 列出的文件
@@ -148,7 +148,7 @@ Wave-1 worktrees and branches were removed after merge; the briefs below are kep
 开始前读：
 1. README.md
 2. pyproject.toml（理解依赖结构）
-3. C:\Users\1\.claude\plans\llm-humming-pike.md 中"开源运营"和"实现里程碑"
+3. the project planning doc (kept locally, not in repo) 中"开源运营"和"实现里程碑"
 
 约束：
 - CI 只跑 lint + pyright + pytest，不要尝试构建 wheel 或前端（那些待 wt/ui-scaffold + 后续 milestone）
@@ -205,7 +205,7 @@ Wave-1 worktrees and branches were removed after merge; the briefs below are kep
 开始前读：
 1. CONTRACTS.md
 2. src/aitap/server/routes/__init__.py（前后端共享的 API 形状，先用它生成 TS 类型；如果 openapi-typescript-codegen 现在不能跑就先手抄一份占位）
-3. C:\Users\1\.claude\plans\llm-humming-pike.md 中前端相关章节
+3. the project planning doc (kept locally, not in repo) 中前端相关章节
 
 实现要求：
 - Vite + React 18 + TS + Tailwind 3 + react-router-dom v6 + react-flow + tanstack/react-query
@@ -256,7 +256,7 @@ Wave-1 worktrees and branches were removed after merge; the briefs below are kep
 1. src/aitap/cli.py（已有的 root callback）
 2. src/aitap/config.py
 3. CONTRACTS.md
-4. C:\Users\1\.claude\plans\llm-humming-pike.md 中"CLI 命令集"
+4. the project planning doc (kept locally, not in repo) 中"CLI 命令集"
 
 约束：
 - aitap init 是唯一要完整实现的命令；其余命令只搭骨架（签名+help+rich-styled "not yet implemented" 输出 或 调一个会被别人填的 placeholder）
@@ -310,7 +310,7 @@ Wave-1 worktrees and branches were removed after merge; the briefs below are kep
 2. src/aitap/scanner/models.py（已存在的 Pipeline / PipelineNode / PipelineEdge / EdgeKind 是你输出的形状，不要改）
 3. src/aitap/scanner/engine.py（你要扩它，但只在清晰的新区域加 hook，不要重构旧代码）
 4. tests/fixtures/openai_basic（参考已有 fixture 结构）
-5. C:\Users\1\.claude\plans\llm-humming-pike.md 中 Pipeline 链路检测一节
+5. the project planning doc (kept locally, not in repo) 中 Pipeline 链路检测一节
 
 实现要求：
 - 每个检测器一个文件 + 一个单测文件
@@ -365,7 +365,7 @@ Wave-1 worktrees and branches were removed after merge; the briefs below are kep
 2. src/aitap/store/db.py（DDL 是契约，不要改；只在它之上加 DAO 函数）
 3. src/aitap/scanner/models.py（你序列化的对象）
 4. src/aitap/config.py（Settings 提供路径）
-5. C:\Users\1\.claude\plans\llm-humming-pike.md 中".aitap/ 持久化"和"用户目录布局"一节
+5. the project planning doc (kept locally, not in repo) 中".aitap/ 持久化"和"用户目录布局"一节
 
 实现要求：
 - YAML 输出要稳定（key 顺序固定、no flow style for nested），方便 git diff
@@ -413,7 +413,7 @@ Wave-1 worktrees and branches were removed after merge; the briefs below are kep
 1. src/aitap/cli.py 中 audit_command 现有的 stub
 2. src/aitap/scanner/__init__.py（scan_project / scan_command 是你要复用的）
 3. src/aitap/scanner/report.py（render_terminal_report 拿来直接用）
-4. C:\Users\1\.claude\plans\llm-humming-pike.md 中 audit 模式一节
+4. the project planning doc (kept locally, not in repo) 中 audit 模式一节
 
 实现要求：
 - 用 gitpython，不要 subprocess.run('git ...')
@@ -519,7 +519,7 @@ Wave-1 worktrees and branches were removed after merge; the briefs below are kep
 2. src/aitap/deep/client.py（LLMClient 抽象，是契约）
 3. src/aitap/scanner/models.py（PromptSite/ScanResult 是输入输出形状，是契约）
 4. src/aitap/scanner/engine.py 和 scanner/__init__.py（你要在这两处加 L2 hook）
-5. C:\Users\1\.claude\plans\llm-humming-pike.md 中 L2 LLM 辅助扫描一节
+5. the project planning doc (kept locally, not in repo) 中 L2 LLM 辅助扫描一节
 
 实现要求：
 - 单测用自己写的 MockLLMClient，不依赖 wt/providers 的真实实现
@@ -536,12 +536,12 @@ Wave-1 worktrees and branches were removed after merge; the briefs below are kep
 
 | Worktree | Branch | Path |
 |---|---|---|
-| Prompts/history API | `wt/api-prompts` | `D:/AIcoding/aitap-api-prompts` |
-| Runs/settings API | `wt/api-runs` | `D:/AIcoding/aitap-api-runs` |
-| Playground runner | `wt/runner` | `D:/AIcoding/aitap-runner` |
-| UI inventory pages | `wt/ui-inventory` | `D:/AIcoding/aitap-ui-inventory` |
-| UI playground pages | `wt/ui-playground` | `D:/AIcoding/aitap-ui-playground` |
-| Test-case generators | `wt/dataset` | `D:/AIcoding/aitap-dataset` |
+| Prompts/history API | `wt/api-prompts` | `<workspace>/aitap-api-prompts` |
+| Runs/settings API | `wt/api-runs` | `<workspace>/aitap-api-runs` |
+| Playground runner | `wt/runner` | `<workspace>/aitap-runner` |
+| UI inventory pages | `wt/ui-inventory` | `<workspace>/aitap-ui-inventory` |
+| UI playground pages | `wt/ui-playground` | `<workspace>/aitap-ui-playground` |
+| Test-case generators | `wt/dataset` | `<workspace>/aitap-dataset` |
 
 **Coordination notes for Wave 3**
 
@@ -839,7 +839,7 @@ Wave-1 worktrees and branches were removed after merge; the briefs below are kep
 2. src/aitap/scanner/models.py（PromptSite，特别是 location + parameters + purpose）
 3. src/aitap/store/files.py（append_cases / read_cases）
 4. src/aitap/deep/client.py + src/aitap/deep/testing.py（MockLLMClient）
-5. C:\Users\1\.claude\plans\llm-humming-pike.md 中"测试用例策略"
+5. the project planning doc (kept locally, not in repo) 中"测试用例策略"
 
 实现要求：
 - llm_expander 的 LLM 调用走 LLMClient 抽象，不直接打 SDK

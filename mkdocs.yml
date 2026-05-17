@@ -1,8 +1,8 @@
 site_name: aitap
 site_description: Zero-config CLI to discover, test, and iterate prompts in your AI codebase.
-site_url: https://aitap.github.io/aitap/
-repo_url: https://github.com/aitap/aitap
-repo_name: aitap/aitap
+site_url: https://Vikingboat666.github.io/AItap/
+repo_url: https://github.com/Vikingboat666/AItap
+repo_name: Vikingboat666/AItap
 edit_uri: edit/main/docs/
 
 docs_dir: docs
@@ -80,4 +80,4 @@ plugins:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/aitap/aitap
+      link: https://github.com/Vikingboat666/AItap
