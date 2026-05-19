@@ -208,6 +208,62 @@ def test_analyze_detects_cycle_and_raises() -> None:
         analyze(pipeline, iterated_node_id="a")
 
 
+def test_analyze_merges_edge_kinds_from_all_equal_distance_shortest_paths() -> None:
+    # Diamond with two distinct edge kinds on the equal-length branches:
+    #
+    #         a
+    #        / \
+    #  (var)/   \(langchain_pipe)
+    #      v     v
+    #      b     c
+    #       \   /
+    #   (var)\ /(var)
+    #         v
+    #         d
+    #
+    # Both A->B->D and A->C->D are shortest paths to D (distance 2).
+    # Reviewer blocker B2: the analyzer must union edge kinds across
+    # *all* equal-distance shortest paths, not pick whichever sibling
+    # the BFS happened to drain first. Without the fix D.edge_kinds is
+    # silently truncated to whichever branch won the race.
+    pipeline = _pipeline(
+        ["a", "b", "c", "d"],
+        [
+            ("a", "b", EdgeKind.VARIABLE),
+            ("a", "c", EdgeKind.LANGCHAIN_PIPE),
+            ("b", "d", EdgeKind.VARIABLE),
+            ("c", "d", EdgeKind.VARIABLE),
+        ],
+    )
+    result = analyze(pipeline, iterated_node_id="a")
+    by_id = {n.node_id: n for n in result}
+    assert set(by_id["d"].edge_kinds) == {
+        EdgeKind.VARIABLE.value,
+        EdgeKind.LANGCHAIN_PIPE.value,
+    }
+
+
+def test_analyze_handles_long_linear_chain_without_recursion() -> None:
+    # Reviewer blocker B3: cycle detection used recursive DFS, which
+    # raises ``RecursionError`` on chains longer than Python's default
+    # ~1000-frame limit. A 2000-node linear chain is a perfectly valid
+    # DAG and must not crash a defensive safety net. Iterative DFS
+    # (explicit stack) keeps the same three-colour algorithm without
+    # touching the call stack.
+    n = 2000
+    node_ids = [f"a_{i}" for i in range(n)]
+    edges = [(node_ids[i], node_ids[i + 1], EdgeKind.VARIABLE) for i in range(n - 1)]
+    pipeline = _pipeline(node_ids, edges)
+    result = analyze(pipeline, iterated_node_id=node_ids[0])
+    # Every node except the iterated source is downstream of a_0.
+    assert len(result) == n - 1
+    # Spot-check the BFS distance is the chain offset, not an off-by-one.
+    assert result[0].node_id == node_ids[1]
+    assert result[0].distance == 1
+    assert result[-1].node_id == node_ids[-1]
+    assert result[-1].distance == n - 1
+
+
 def test_analyze_ignores_edges_to_nodes_outside_pipeline() -> None:
     # Defensive: a stray edge pointing at a non-existent node id must
     # not crash the walker. Treating the edge as inert is the safest
@@ -244,14 +300,34 @@ def test_assess_status_verified_within_epsilon() -> None:
     assert status == {"b": DownstreamStatus.VERIFIED}
 
 
-def test_assess_status_verified_when_diff_equals_epsilon() -> None:
-    # Boundary: |diff| == eps is still "within epsilon" (no surprise change).
+def test_assess_status_verified_at_exact_epsilon_boundary() -> None:
+    # Reviewer blocker B1: the docstring says ``|diff| <= epsilon`` lands
+    # in VERIFIED, but the previous test was a lie — ``0.82 - 0.80``
+    # rounds to ``0.01999...`` under IEEE 754 and never trips the
+    # boundary. Build the diff from powers-of-two fractions that *are*
+    # bit-exact (0.25 and 0.5 are representable without rounding), so
+    # the ``diff == epsilon`` equality holds at the bit level and the
+    # branch we actually want to pin gets exercised.
+    diff = 0.5 - 0.25
+    assert diff == 0.25  # sanity: bit-exact, not float noise
     status = assess_status(
-        pre_scores={"b": 0.80},
-        post_scores={"b": 0.82},
-        epsilon=0.02,
+        pre_scores={"b": 0.25},
+        post_scores={"b": 0.5},
+        epsilon=0.25,
     )
     assert status == {"b": DownstreamStatus.VERIFIED}
+
+
+def test_assess_status_improved_just_above_epsilon() -> None:
+    # One nudge past the boundary — diff is strictly greater than
+    # epsilon, so the status flips to IMPROVED. Pairs with the boundary
+    # test above to pin both sides of the inequality (``>`` vs ``==``).
+    status = assess_status(
+        pre_scores={"b": 0.25},
+        post_scores={"b": 0.5 + 1e-9},
+        epsilon=0.25,
+    )
+    assert status == {"b": DownstreamStatus.IMPROVED}
 
 
 def test_assess_status_regressed_when_post_drops_more_than_epsilon() -> None:

@@ -34,7 +34,7 @@ Design constraints worth flagging:
 
 from __future__ import annotations
 
-from collections import deque
+from collections.abc import Iterator
 from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -116,24 +116,37 @@ def _detect_cycle_reachable_from(
     cycle on the path *would* loop forever if we trusted the input. The
     scanner already runs its own validator; this is a belt-and-braces
     fallback that converts the bug into a precise :class:`ValueError`.
+
+    The traversal is intentionally **iterative** (explicit stack) rather
+    than recursive: a perfectly valid 2000-node linear chain would blow
+    Python's default 1000-frame recursion limit and turn a defensive
+    safety net into a hard crash. Each stack frame carries the current
+    node and a live ``Iterator`` over its remaining children so we
+    resume the parent's loop after each child finishes — same
+    three-colour (white/gray/black) algorithm as the recursive form,
+    just hand-driven.
     """
-    visiting: set[str] = set()
-    visited: set[str] = set()
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color: dict[str, int] = {start: GRAY}
+    stack: list[tuple[str, Iterator[tuple[str, str]]]] = [(start, iter(adjacency.get(start, [])))]
 
-    def dfs(node: str) -> bool:
-        visiting.add(node)
-        for target, _kind in adjacency.get(node, []):
-            if target in visiting:
-                return True
-            if target in visited:
-                continue
-            if dfs(target):
-                return True
-        visiting.discard(node)
-        visited.add(node)
-        return False
+    while stack:
+        node, neighbors = stack[-1]
+        try:
+            child, _kind = next(neighbors)
+        except StopIteration:
+            color[node] = BLACK
+            stack.pop()
+            continue
+        child_color = color.get(child, WHITE)
+        if child_color == GRAY:
+            return True
+        if child_color == BLACK:
+            continue
+        color[child] = GRAY
+        stack.append((child, iter(adjacency.get(child, []))))
 
-    return dfs(start)
+    return False
 
 
 # --------------------------------------------------------------------------- #
@@ -182,33 +195,71 @@ def analyze(
             f"{iterated_node_id!r}; impact analysis aborted"
         )
 
-    # BFS frontier holds (node_id, distance, accumulated_edge_kinds).
-    # We dedupe by ``visited`` keyed on node_id; the first visit wins
-    # the shortest distance (BFS invariant) and its edge-kinds set.
-    visited: dict[str, DownstreamNode] = {}
-    queue: deque[tuple[str, int, tuple[str, ...]]] = deque()
-    queue.append((iterated_node_id, 0, ()))
-    visited_ids: set[str] = {iterated_node_id}
+    # Layered BFS: process the graph one distance ring at a time so that
+    # when we expand a node's children we can union edge-kind
+    # contributions from **all** equal-distance shortest paths that
+    # arrived at that node, not just the first. Without this, a diamond
+    # ``A -[variable]-> B -> D``, ``A -[langchain_pipe]-> C -> D``
+    # would report ``D.edge_kinds = ["variable"]`` only (whichever
+    # sibling drained the queue first), contradicting the module
+    # docstring's "kinds of dataflow edges traversed on the shortest
+    # path" contract for the consumer.
+    #
+    # ``merged_kinds`` is the source of truth for "kinds reachable to
+    # this node along *some* shortest path"; we always extend children
+    # from ``merged_kinds[parent]`` (fully unioned across the previous
+    # ring) so downstream layers inherit kinds picked up via sibling
+    # branches, not just the first-arrival branch. ``dict.fromkeys`` is
+    # the codebase's existing ordered-set idiom; iteration order tracks
+    # BFS discovery order, which gives a stable ``edge_kinds`` list
+    # across runs without an explicit sort.
+    distances: dict[str, int] = {iterated_node_id: 0}
+    merged_kinds: dict[str, dict[str, None]] = {iterated_node_id: {}}
+    current_ring: list[str] = [iterated_node_id]
+    next_distance = 1
 
-    while queue:
-        current, distance, kinds_so_far = queue.popleft()
-        for target, edge_kind in adjacency.get(current, []):
-            if target in visited_ids:
-                continue
-            visited_ids.add(target)
-            new_kinds = tuple(dict.fromkeys((*kinds_so_far, edge_kind)))
-            visited[target] = DownstreamNode(
-                node_id=target,
-                distance=distance + 1,
-                edge_kinds=list(new_kinds),
-                status=DownstreamStatus.UNVERIFIED,
-            )
-            queue.append((target, distance + 1, new_kinds))
+    while current_ring:
+        next_ring: list[str] = []
+        for parent in current_ring:
+            parent_kinds = merged_kinds[parent]
+            for target, edge_kind in adjacency.get(parent, []):
+                existing_distance = distances.get(target)
+                if existing_distance is None:
+                    # First arrival — record shortest distance and seed
+                    # kinds with the parent's union plus this edge.
+                    distances[target] = next_distance
+                    target_kinds: dict[str, None] = dict.fromkeys(parent_kinds)
+                    target_kinds.setdefault(edge_kind, None)
+                    merged_kinds[target] = target_kinds
+                    next_ring.append(target)
+                elif existing_distance == next_distance:
+                    # Equal-distance alternate shortest path — union
+                    # this branch's kinds into the existing bucket so
+                    # the deeper ring inherits them too.
+                    target_kinds = merged_kinds[target]
+                    for kind in parent_kinds:
+                        target_kinds.setdefault(kind, None)
+                    target_kinds.setdefault(edge_kind, None)
+                # else: existing_distance < next_distance — strictly
+                # longer path through ``target``; skip. BFS guarantees
+                # no shorter path will ever arrive after the first.
+        current_ring = next_ring
+        next_distance += 1
 
     # Sort by (distance, node_id) — distance dominates so the banner can
     # group "immediate downstream" first, node_id is the tie-breaker for
     # stable serialisation.
-    return sorted(visited.values(), key=lambda n: (n.distance, n.node_id))
+    nodes: list[DownstreamNode] = [
+        DownstreamNode(
+            node_id=nid,
+            distance=distances[nid],
+            edge_kinds=list(merged_kinds[nid]),
+            status=DownstreamStatus.UNVERIFIED,
+        )
+        for nid in distances
+        if nid != iterated_node_id
+    ]
+    return sorted(nodes, key=lambda n: (n.distance, n.node_id))
 
 
 def assess_status(
@@ -260,12 +311,21 @@ def assess_status(
             result[node_id] = DownstreamStatus.UNVERIFIED
             continue
         diff = post - pre
-        if abs(diff) <= epsilon:
-            result[node_id] = DownstreamStatus.VERIFIED
-        elif diff > 0:
+        # Branch on signed ``diff`` with strict ``>``/``<`` against
+        # ``±epsilon`` so the boundary ``|diff| == epsilon`` falls into
+        # VERIFIED, matching the docstring contract exactly. The earlier
+        # ``abs(diff) <= epsilon`` form was equivalent on paper but
+        # split the comparison across two predicates, which made the
+        # boundary semantics easy to misread (and the corresponding
+        # test name a lie — IEEE 754 means ``0.82 - 0.80`` is never
+        # *exactly* 0.02). Keeping a single sign-aware ladder removes
+        # the ambiguity.
+        if diff > epsilon:
             result[node_id] = DownstreamStatus.IMPROVED
-        else:
+        elif diff < -epsilon:
             result[node_id] = DownstreamStatus.REGRESSED
+        else:
+            result[node_id] = DownstreamStatus.VERIFIED  # |diff| <= epsilon
     return result
 
 
