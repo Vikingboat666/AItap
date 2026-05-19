@@ -253,13 +253,64 @@ async def test_get_run_returns_detail_shape(client: AsyncClient) -> None:
     # The dispatch adapter persisted the terminal status before this GET.
     assert body["status"] == "done"
     # No cases on this payload, so the runner makes zero chat calls and
-    # the rolled-up cost stays at 0.0. The outputs list is the M4 sidecar
-    # path (see ``aitap.playground.dispatch.outputs_sidecar_path``); for
-    # now it's an empty placeholder.
+    # the rolled-up cost stays at 0.0. The sidecar is still written
+    # (zero lines) so the reader returns an empty outputs list — the
+    # absent-file case is reserved for run-level failures.
     assert body["outputs"] == []
     assert body["cost_usd"] == 0.0
     assert body["started_at"]
     assert body["finished_at"]
+
+
+async def test_get_run_returns_per_case_outputs_from_sidecar(
+    client: AsyncClient,
+    settings: Settings,
+) -> None:
+    """A run with cases populates the detail endpoint's ``outputs`` list.
+
+    Wave 4 prerequisite: the sidecar writer in
+    :func:`aitap.playground.dispatch._write_outputs_sidecar` must
+    produce JSONL that :func:`aitap.server.routes.runs._load_outputs`
+    reads back into :class:`RunOutput` objects. This test exercises the
+    full HTTP path end-to-end.
+    """
+    # Override the per-test MockLLMClient with one that returns scripted
+    # replies so we can assert per-case text content lands in the
+    # response. The autouse ``_mock_invoke_run_client`` fixture installs
+    # a default-reply mock; we replace it here for this specific test.
+    scripted_mock = MockLLMClient(
+        model="claude-sonnet-4-6",
+        scripted=["case-0-output", "case-1-output", "case-2-output"],
+    )
+    playground_dispatch.set_client_factory(lambda provider, model: scripted_mock)
+    try:
+        payload = _run_payload()
+        payload["cases"] = [
+            {"inputs": {"x": "a"}},
+            {"inputs": {"x": "b"}},
+            {"inputs": {"x": "c"}},
+        ]
+        posted = (await client.post("/api/runs", json=payload)).json()
+        assert posted["status"] == "done"
+
+        resp = await client.get(f"/api/runs/{posted['run_id']}")
+        assert resp.status_code == 200
+        body = resp.json()
+        outputs = body["outputs"]
+        assert len(outputs) == 3
+        assert [o["case_index"] for o in outputs] == [0, 1, 2]
+        assert [o["text"] for o in outputs] == [
+            "case-0-output",
+            "case-1-output",
+            "case-2-output",
+        ]
+        assert all(o["error"] is None for o in outputs)
+        # The rolled-up run-level cost reflects the three MockLLMClient calls.
+        assert body["cost_usd"] > 0.0
+    finally:
+        # Reinstate the autouse fixture's default so other tests in the
+        # session aren't affected.
+        playground_dispatch.set_client_factory(lambda provider, model: MockLLMClient(model=model))
 
 
 # ---------------------------------------------------------------------------
