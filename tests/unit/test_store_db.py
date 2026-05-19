@@ -84,8 +84,9 @@ def test_init_db_is_idempotent(tmp_path: Path) -> None:
     db.init_db(c)
     db.init_db(c)
     cur = c.execute("SELECT COUNT(*) AS n FROM schema_version")
-    # One version row per init, but second init should detect we're at target.
-    assert cur.fetchone()["n"] == 1
+    # One schema_version row per migration step (1..SCHEMA_VERSION); a second
+    # init detects we're already at target and adds nothing.
+    assert cur.fetchone()["n"] == db.SCHEMA_VERSION
     c.close()
 
 

@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from aitap.scanner.models import Pipeline, PromptSite, ProviderEvidence
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # DDL is split per-table so future migrations can ALTER individual tables
 # without re-emitting the whole schema.
@@ -147,6 +147,35 @@ CREATE TABLE IF NOT EXISTS providers_detected (
 );
 """
 
+# Added in schema v2 (Wave 4 — self-iteration loop). One row per round of an
+# /iterate session. Event-stream semantics — downstream_status is mutable so
+# the impact analyzer can flip 'unverified' to 'verified' / 'regressed' hours
+# after the loop committed the new prompt version.
+DDL_ITERATIONS = """
+CREATE TABLE IF NOT EXISTS iterations (
+    id                  TEXT    PRIMARY KEY,           -- ULID
+    prompt_id           TEXT    NOT NULL,
+    round               INTEGER NOT NULL,              -- 1-indexed within a session
+    session_id          TEXT    NOT NULL,              -- groups rounds of one /iterate invocation
+    is_baseline         INTEGER NOT NULL DEFAULT 0,    -- 1 for round 1, 0 otherwise
+    parent_version      INTEGER,                       -- prompt_versions.version this round started from
+    new_version         INTEGER,                       -- prompt_versions.version produced (NULL for baseline)
+    revise_mode         TEXT,                          -- 'auto' | 'guided' | 'manual' | NULL for baseline
+    revise_instruction  TEXT,                          -- user instruction for 'guided'; NULL otherwise
+    critique_text       TEXT,                          -- judge's critique passed to critic
+    weighted_score      REAL    NOT NULL,
+    per_dim_scores      TEXT    NOT NULL,              -- JSON: {dim_name: score}
+    downstream_status   TEXT,                          -- JSON: {node_id: status} | NULL if not pipeline node
+    converged_reason    TEXT,                          -- 'max_rounds' | 'delta' | 'stagnation' | NULL while in progress
+    started_at          TEXT    NOT NULL,
+    finished_at         TEXT,
+    UNIQUE (prompt_id, session_id, round),
+    FOREIGN KEY (prompt_id) REFERENCES prompts(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_iterations_prompt ON iterations(prompt_id);
+CREATE INDEX IF NOT EXISTS idx_iterations_session ON iterations(session_id);
+"""
+
 ALL_DDL = (
     DDL_SCHEMA_VERSION,
     DDL_PROMPTS,
@@ -156,13 +185,29 @@ ALL_DDL = (
     DDL_SCORES,
     DDL_FEEDBACK,
     DDL_PROVIDERS,
+    DDL_ITERATIONS,
 )
+
+
+def _migrate_v2_iterations(conn: sqlite3.Connection) -> None:
+    """Migration 0001 -> 0002: add the iterations table + its two indexes.
+
+    Re-uses :data:`DDL_ITERATIONS` so the migration step and the bootstrap
+    step never drift; ``CREATE TABLE IF NOT EXISTS`` keeps the call idempotent
+    if the table already happens to exist (e.g., a half-applied upgrade).
+    """
+    conn.executescript(DDL_ITERATIONS)
 
 
 # Migrations are functions taking a connection and applying schema changes.
 # Index N migrates from version N-1 to N. Index 0 is unused (no migration needed
-# to reach the bootstrap version).
-MIGRATIONS: list = []
+# to reach the bootstrap version); index 1 is the bootstrap-from-empty step
+# already covered by ALL_DDL.
+MIGRATIONS: list = [
+    None,  # index 0 — never invoked (no migration to version 0)
+    None,  # index 1 — bootstrap; ALL_DDL handles it
+    _migrate_v2_iterations,
+]
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
@@ -211,7 +256,9 @@ def init_db(conn: sqlite3.Connection) -> None:
     target = SCHEMA_VERSION
     for v in range(current + 1, target + 1):
         if v < len(MIGRATIONS):
-            MIGRATIONS[v](conn)
+            step = MIGRATIONS[v]
+            if step is not None:
+                step(conn)
         conn.execute("INSERT INTO schema_version(version) VALUES (?)", (v,))
 
 
