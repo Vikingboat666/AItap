@@ -24,12 +24,21 @@ probes via ``importlib.util.find_spec``. It:
 5. Persists the terminal status + cost back to ``runs``.
 
 Output persistence:
-    Per-case outputs are *not* written to SQLite (no ``outputs`` table in
-    the Wave 3 schema). The current direction is a JSONL sidecar under
-    ``.aitap/runs/<run_id>/outputs.jsonl`` and that's TODO for M4 — when
-    we know what schema the UI wants. For now the adapter only needs to
-    move the run from ``running`` to ``done``/``failed`` and stamp the
-    rolled-up cost so the API contract holds end-to-end.
+    Per-case outputs are written to a JSONL sidecar at
+    ``.aitap/runs/<run_id>/outputs.jsonl`` — one JSON object per case,
+    aligned with the :class:`aitap.server.routes.RunOutput` contract so
+    the reader (:func:`aitap.server.routes.runs._load_outputs`) can
+    ``RunOutput.model_validate`` each line with zero conversion. Extra
+    forward-looking fields (``cost_usd``, ``usage``, ``latency_ms``) are
+    included alongside the contract fields; pydantic ignores them when
+    constructing :class:`RunOutput` but they are available for the
+    Wave 4 judge / critic to score and target weak cases.
+
+    The sidecar is written atomically (``outputs.jsonl.tmp`` + atomic
+    ``os.replace``) so a reader concurrent with a writer never sees a
+    half-flushed file. The rolled-up run-level ``cost_usd`` and terminal
+    status continue to land in the ``runs`` SQLite row exactly as
+    before — the sidecar is additive context, not a replacement.
 """
 
 from __future__ import annotations
@@ -37,12 +46,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from aitap.deep import client as client_module
+from aitap.deep.client import ChatResponse
 from aitap.playground.pipeline_runner import (
     PipelineRunResult,
     run_pipeline,
@@ -52,7 +63,7 @@ from aitap.playground.runner import (
     run_prompt,
 )
 from aitap.scanner.models import Pipeline, PromptSite
-from aitap.server.routes import DatasetCase, RunCreate
+from aitap.server.routes import DatasetCase, RunCreate, RunOutput
 from aitap.store import db as store_db
 from aitap.store import files as store_files
 from aitap.store import runs as runs_dao
@@ -113,22 +124,37 @@ def invoke_run(
     run_id: str,
     payload: RunCreate,
 ) -> None:
-    """Execute *payload* and persist the terminal run state.
+    """Execute *payload* and persist the terminal run state + per-case outputs.
 
     Called from the FastAPI request handler in a synchronous context;
     we manage our own connection (rather than re-using the request's)
     because the handler closes its connection at request scope exit and
     the adapter's persistence outlives whatever scope the caller chose.
 
-    On exception we update the run to ``failed`` (so the UI never shows
-    a permanently-running spinner) and re-raise so FastAPI returns 500
-    to the caller.
+    The terminal status + rolled-up cost land in the ``runs`` SQLite row;
+    per-case outputs (including per-case ``error`` for cases that fail
+    in isolation) land in :func:`outputs_sidecar_path`. Writing the
+    sidecar after a successful dispatch *and* on per-case failures means
+    a Wave 4 judge can score every case the runner did manage to
+    produce, even within an otherwise-degraded run.
+
+    On run-level exception (target not found, malformed payload, etc.)
+    we update the run to ``failed`` so the UI never shows a permanently-
+    running spinner, then re-raise so FastAPI returns 500. We do not
+    write a sidecar in that path because there are no per-case results
+    to persist — the reader falls back to an empty list, which is the
+    documented behaviour when ``outputs.jsonl`` is absent.
     """
     conn = store_db.connect(settings.db_path)
     try:
         store_db.init_db(conn)
         try:
-            metrics = _dispatch(settings=settings, conn=conn, payload=payload)
+            metrics = _dispatch(
+                settings=settings,
+                conn=conn,
+                run_id=run_id,
+                payload=payload,
+            )
         except Exception:
             # Best-effort failure marker. We swallow any secondary error
             # from the status update so the original exception (which is
@@ -160,12 +186,20 @@ def _dispatch(
     *,
     settings: Settings,
     conn: sqlite3.Connection,
+    run_id: str,
     payload: RunCreate,
 ) -> _RunMetrics:
     """Resolve the target + cases, build the client, and run the appropriate runner.
 
     Returns a small metrics shim with the aggregated cost so the caller
     can persist it without caring whether a prompt or pipeline ran.
+
+    Per-case outputs are written to the JSONL sidecar from inside this
+    function (after the runner returns and before we hand control back
+    to :func:`invoke_run`). Writing here — rather than in ``invoke_run``
+    — keeps the prompt-vs-pipeline shape branching local to where we
+    actually have the typed result; the caller only needs the cost
+    roll-up.
     """
     cases = _resolve_cases(settings, payload)
     client = _client_factory(payload.provider.value, payload.model)
@@ -180,6 +214,12 @@ def _dispatch(
                 client=client,
                 parameters=payload.parameters,
             )
+        )
+        _write_outputs_sidecar(
+            settings=settings,
+            run_id=run_id,
+            outputs=prompt_result.outputs,
+            responses=prompt_result.responses,
         )
         return _RunMetrics(total_cost_usd=prompt_result.total_cost_usd)
 
@@ -196,6 +236,21 @@ def _dispatch(
                 parameters=payload.parameters,
                 version=payload.target_version,
             )
+        )
+        # Pipeline mode does not surface per-case ChatResponses through
+        # PipelineRunResult — per-case cost/usage rolls up at the node-
+        # walk level inside ``_run_single_case_segment``. We persist the
+        # contract fields (text + intermediate + error) and leave the
+        # forward-looking cost/usage fields null so the judge falls back
+        # to the run-level cost on the runs table. Sink output is in
+        # ``RunOutput.text``; per-node intermediates ride along in
+        # ``RunOutput.intermediate`` — no separate intermediates.jsonl
+        # is needed because the contract already carries that shape.
+        _write_outputs_sidecar(
+            settings=settings,
+            run_id=run_id,
+            outputs=pipeline_result.outputs,
+            responses=None,
         )
         return _RunMetrics(total_cost_usd=pipeline_result.metrics.total_cost_usd)
 
@@ -298,15 +353,143 @@ def _row_payload(row: sqlite3.Row) -> str:
     return json.dumps(raw)
 
 
-__all__ = ["ClientFactory", "invoke_run", "set_client_factory"]
+__all__ = [
+    "ClientFactory",
+    "invoke_run",
+    "outputs_sidecar_path",
+    "set_client_factory",
+]
 
 
-# Keep a sidecar path helper exported so future M4 work writing outputs.jsonl
-# under ``.aitap/runs/<id>/`` has a single source of truth for the layout.
+# Keep a sidecar path helper exported so the reader side
+# (:func:`aitap.server.routes.runs._load_outputs`) and the writer here
+# share a single source of truth for the layout. Changing one without
+# the other silently desyncs the API contract — the constant lives in
+# this module rather than ``config.py`` because the layout is owned by
+# the dispatch adapter, not the global Settings surface.
 def outputs_sidecar_path(settings: Settings, run_id: str) -> Path:
     """Resolve the per-run outputs JSONL path.
 
-    TODO(M4): write outputs here from ``invoke_run`` and teach
-    ``aitap.server.routes.runs._load_outputs`` to read it back.
+    Layout: ``<runs_dir>/<run_id>/outputs.jsonl``. The reader
+    (:func:`aitap.server.routes.runs._load_outputs`) treats a missing
+    file as an empty outputs list (legitimate for runs still in
+    ``running`` status); the writer always writes atomically via a
+    ``.tmp`` neighbour + ``os.replace`` so the reader never sees a
+    half-flushed file.
     """
     return settings.runs_dir / run_id / "outputs.jsonl"
+
+
+def _run_output_to_record(
+    output: RunOutput,
+    response: ChatResponse | None,
+) -> dict[str, object]:
+    """Serialise one RunOutput + optional per-case response into a JSONL row.
+
+    The fields that match :class:`RunOutput` are emitted exactly as
+    declared by the API contract (so the reader's ``model_validate``
+    call round-trips with zero conversion). Forward-looking fields the
+    Wave 4 judge / critic will consume — per-case cost, token usage,
+    latency — are added alongside; pydantic's default ``extra="ignore"``
+    on ``_ApiModel`` drops them when constructing the response shape so
+    the API contract stays stable while the on-disk format is richer.
+    """
+    record: dict[str, object] = {
+        # Contract fields (round-trip into RunOutput via model_validate).
+        "case_index": output.case_index,
+        "text": output.text,
+        "image_path": output.image_path,
+        "error": output.error,
+        "intermediate": output.intermediate,
+        # Forward-looking judge/critic context (extras, ignored by RunOutput).
+        "cost_usd": response.cost_usd if response is not None else None,
+        "usage": (
+            {
+                "input_tokens": response.usage.input_tokens,
+                "output_tokens": response.usage.output_tokens,
+            }
+            if response is not None
+            else None
+        ),
+        # Latency is not currently measured by the runner; reserved so
+        # the on-disk shape is stable once the runner starts capturing
+        # it. Judge code reading older sidecars should tolerate ``None``.
+        "latency_ms": None,
+    }
+    return record
+
+
+def _write_outputs_sidecar(
+    *,
+    settings: Settings,
+    run_id: str,
+    outputs: list[RunOutput],
+    responses: list[ChatResponse | None] | None,
+) -> None:
+    """Persist per-case ``outputs`` to ``outputs.jsonl`` atomically.
+
+    Atomicity guarantees:
+        We write to ``outputs.jsonl.tmp`` in the same directory and then
+        :func:`os.replace` to the final name. ``os.replace`` is atomic
+        on both POSIX and Windows for paths on the same volume, which
+        is guaranteed here because both names share the run directory.
+        A reader concurrent with the writer either sees no file (and
+        returns an empty list) or sees the fully-written file — never
+        a partial line.
+
+    Parameters:
+        outputs: The per-case RunOutput list from the runner. Index
+            order is preserved verbatim so ``case_index`` lines up.
+        responses: Per-case ChatResponse list from prompt mode (None
+            for cases that errored). ``None`` for pipeline mode where
+            per-case responses aren't surfaced through PipelineRunResult.
+
+    Writing an empty outputs list still creates the file (zero lines).
+    This is intentional: it lets callers distinguish "run completed
+    with no cases" (empty file present) from "run never wrote outputs"
+    (file absent — e.g., the dispatch raised before reaching here).
+    """
+    target = outputs_sidecar_path(settings, run_id)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(target.suffix + ".tmp")
+
+    # Pair each output with its response (or None for pipeline / errored
+    # cases). zip_longest semantics not needed — both lists are 1:1 with
+    # cases in prompt mode; pipeline mode passes None so the pairing
+    # degenerates to "every record has response=None."
+    if responses is None:
+        paired: list[tuple[RunOutput, ChatResponse | None]] = [(o, None) for o in outputs]
+    else:
+        # The runner contract guarantees ``len(responses) == len(outputs)``
+        # in prompt mode; assert to surface a runner bug loudly rather
+        # than silently truncate the sidecar.
+        if len(responses) != len(outputs):
+            raise RuntimeError(
+                f"runner returned mismatched outputs ({len(outputs)}) "
+                f"and responses ({len(responses)}) for run {run_id!r}"
+            )
+        paired = list(zip(outputs, responses, strict=True))
+
+    try:
+        with tmp.open("w", encoding="utf-8", newline="\n") as handle:
+            for output, response in paired:
+                record = _run_output_to_record(output, response)
+                handle.write(json.dumps(record, ensure_ascii=False))
+                handle.write("\n")
+            # Force fsync-ish durability before the rename so a crash in
+            # the window between write() and replace() can't leave a
+            # zero-byte tmp file masquerading as a valid sidecar.
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, target)
+    except Exception:
+        # Best-effort cleanup of the half-written tmp so a retried
+        # invoke_run doesn't trip over stale partial state. We do NOT
+        # touch the (possibly-pre-existing) target on failure — the
+        # previous good file, if any, is left intact.
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            _LOGGER.exception("failed to clean up %s after sidecar write error", tmp)
+        raise

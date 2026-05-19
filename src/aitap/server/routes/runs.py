@@ -19,6 +19,8 @@ runs against a tmp_path-rooted project without env-var monkeypatching.
 
 from __future__ import annotations
 
+import json
+import logging
 import sqlite3
 from typing import Annotated, Literal, cast
 
@@ -26,6 +28,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from aitap.config import Settings
 from aitap.iterate import iterate_one_round
+from aitap.playground.dispatch import outputs_sidecar_path
 from aitap.server.routes import (
     FeedbackCreate,
     FeedbackResponse,
@@ -40,6 +43,8 @@ from aitap.server.routes import (
 from aitap.server.routes._deps import get_db, get_settings
 from aitap.store import db as store_db
 from aitap.store import runs as runs_dao
+
+_LOGGER = logging.getLogger(__name__)
 
 router = APIRouter(tags=["runs"])
 
@@ -112,15 +117,17 @@ def list_runs_endpoint(
 @router.get("/runs/{run_id}", response_model=RunDetailResponse)
 def get_run(
     run_id: str,
+    settings: Annotated[Settings, Depends(get_settings)],
     conn: Annotated[sqlite3.Connection, Depends(get_db)],
 ) -> RunDetailResponse:
-    """Fetch one run + a placeholder outputs list.
+    """Fetch one run + per-case outputs from the JSONL sidecar.
 
-    Wave 3 doesn't persist per-case outputs to the DB (no ``outputs``
-    table); we return an empty list so the response shape matches the
-    contract. The :mod:`aitap.playground.dispatch` adapter has a TODO to
-    write outputs as a JSONL sidecar under ``.aitap/runs/<id>/`` in M4 —
-    once that lands :func:`_load_outputs` will read from there.
+    Per-case outputs live in
+    ``<runs_dir>/<run_id>/outputs.jsonl`` (written by
+    :func:`aitap.playground.dispatch._write_outputs_sidecar`). Runs still
+    in the ``running`` status — or runs that failed at the run level
+    before any case completed — have no sidecar file; :func:`_load_outputs`
+    returns an empty list in that case so the contract shape is preserved.
     """
     row = runs_dao.read_run(conn, run_id)
     if row is None:
@@ -131,7 +138,7 @@ def get_run(
         target_id=str(row["target_id"]),
         target_version=int(row["target_version"]),
         status=_coerce_status(row["status"]),
-        outputs=_load_outputs(),
+        outputs=_load_outputs(settings, run_id),
         cost_usd=float(row["cost_usd"] or 0.0),
         started_at=runs_dao.parse_started_at(row),
         finished_at=runs_dao.parse_finished_at(row),
@@ -255,16 +262,52 @@ def _invoke_runner_safely(
     return "done"
 
 
-def _load_outputs() -> list[RunOutput]:
-    """Placeholder — Wave 3 doesn't persist per-case outputs to SQLite.
+def _load_outputs(settings: Settings, run_id: str) -> list[RunOutput]:
+    """Read per-case outputs from the JSONL sidecar.
 
-    The dispatch adapter currently writes outputs to a JSONL sidecar
-    under ``.aitap/runs/<id>/outputs.jsonl`` (see
-    :mod:`aitap.playground.dispatch`). M4 will teach this helper to read
-    that file; for now the response keeps outputs empty so the shape
-    stays contract-correct.
+    Layout: ``<runs_dir>/<run_id>/outputs.jsonl`` — one JSON record per
+    case, written by :func:`aitap.playground.dispatch._write_outputs_sidecar`.
+
+    Missing file → empty list. This is the legitimate "run is still
+    ``running``" and "run failed at the run level before any case
+    completed" path; the API contract (and the existing integration
+    tests) tolerate an empty outputs list for those states.
+
+    Malformed lines are skipped with a warning rather than crashing the
+    detail endpoint. The sidecar is forward-compatible — extra fields
+    that the API contract doesn't know about are silently ignored by
+    pydantic — but a *broken* line (truncated JSON, wrong type at
+    ``case_index``) should not 500 the whole UI; we log it and move on
+    so the rest of the run's outputs are still surfaced.
     """
-    return []
+    path = outputs_sidecar_path(settings, run_id)
+    if not path.exists():
+        return []
+    outputs: list[RunOutput] = []
+    try:
+        # Open in text mode with explicit utf-8; the writer matches.
+        with path.open("r", encoding="utf-8") as handle:
+            for line_number, raw_line in enumerate(handle, start=1):
+                stripped = raw_line.strip()
+                if not stripped:
+                    # Tolerate trailing newlines / blank separators.
+                    continue
+                try:
+                    record = json.loads(stripped)
+                except json.JSONDecodeError:
+                    _LOGGER.warning("skipping malformed JSON in %s at line %d", path, line_number)
+                    continue
+                try:
+                    outputs.append(RunOutput.model_validate(record))
+                except Exception:  # pydantic ValidationError, but also generic guard
+                    _LOGGER.warning(
+                        "skipping unparseable RunOutput in %s at line %d", path, line_number
+                    )
+                    continue
+    except OSError:
+        _LOGGER.exception("failed to read outputs sidecar at %s", path)
+        return []
+    return outputs
 
 
 def _coerce_status(value: object) -> Literal["running", "done", "failed"]:
