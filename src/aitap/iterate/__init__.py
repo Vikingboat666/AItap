@@ -151,4 +151,27 @@ def _find_version_row(
     return cur.fetchone()
 
 
-__all__ = ["IterationOutcome", "iterate_one_round"]
+# --------------------------------------------------------------------------- #
+# Wave 4: re-export the full orchestrator from ``loop.py``.                   #
+#                                                                             #
+# ``iterate_one_round`` (Wave 3 stub) above stays here for backward            #
+# compatibility — ``server/routes/runs.py:post_iterate`` still imports it as  #
+# the single-round fallback. The new ``iterate_loop`` coroutine is the M4    #
+# entry point; ``api-iterate`` will start calling it once that worktree      #
+# lands.                                                                      #
+# --------------------------------------------------------------------------- #
+from aitap.iterate.loop import (  # noqa: E402
+    ConvergenceConfig,
+    iterate_loop,
+)
+from aitap.iterate.loop import (  # noqa: E402
+    IterationOutcome as LoopIterationOutcome,
+)
+
+__all__ = [
+    "ConvergenceConfig",
+    "IterationOutcome",
+    "LoopIterationOutcome",
+    "iterate_loop",
+    "iterate_one_round",
+]
