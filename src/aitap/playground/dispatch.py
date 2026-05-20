@@ -215,7 +215,7 @@ def _dispatch(
                 parameters=payload.parameters,
             )
         )
-        _write_outputs_sidecar(
+        write_outputs_sidecar(
             settings=settings,
             run_id=run_id,
             outputs=prompt_result.outputs,
@@ -246,7 +246,7 @@ def _dispatch(
         # ``RunOutput.text``; per-node intermediates ride along in
         # ``RunOutput.intermediate`` — no separate intermediates.jsonl
         # is needed because the contract already carries that shape.
-        _write_outputs_sidecar(
+        write_outputs_sidecar(
             settings=settings,
             run_id=run_id,
             outputs=pipeline_result.outputs,
@@ -358,6 +358,7 @@ __all__ = [
     "invoke_run",
     "outputs_sidecar_path",
     "set_client_factory",
+    "write_outputs_sidecar",
 ]
 
 
@@ -419,7 +420,7 @@ def _run_output_to_record(
     return record
 
 
-def _write_outputs_sidecar(
+def write_outputs_sidecar(
     *,
     settings: Settings,
     run_id: str,

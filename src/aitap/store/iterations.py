@@ -39,6 +39,7 @@ __all__ = [
     "new_session_id",
     "parse_downstream_status",
     "parse_per_dim_scores",
+    "read_iteration",
     "read_iterations_for",
     "read_session",
     "serialize_downstream_status",
@@ -49,8 +50,22 @@ __all__ = [
 
 # Mirror the column-level enum semantics so a typo surfaces as a TypeError in
 # Python land rather than a silent string in the DB.
-ReviseMode = Literal["auto", "guided", "manual"]
-ConvergedReason = Literal["max_rounds", "delta", "stagnation"]
+ReviseMode = Literal["auto", "guided", "manual", "failed"]
+# 'failed' is a wt/loop sentinel — the loop orchestrator emits it when the
+# critic LLM reply could not be parsed and the round was aborted. Carrying
+# it on the same column (rather than introducing a separate status field)
+# keeps the iteration log a single time-ordered event stream.
+ConvergedReason = Literal[
+    "max_rounds",
+    "delta",
+    "stagnation",
+    "absolute",
+    "critic_failed",
+]
+# 'absolute' is the opt-in per-dim / non-negotiable threshold (Decision 3);
+# 'critic_failed' is the wt/loop sentinel paired with ReviseMode='failed'
+# so the UI can render "the critic broke" distinctly from "we converged
+# successfully".
 # Per Decision 4 the impact analyzer flips 'unverified' to one of the others
 # as the user re-runs downstream nodes.
 DownstreamStatus = Literal["unverified", "verified", "regressed", "improved"]
@@ -300,6 +315,21 @@ def read_session(conn: sqlite3.Connection, session_id: str) -> list[Iteration]:
         (session_id,),
     )
     return [_row_to_iteration(row) for row in cur.fetchall()]
+
+
+def read_iteration(conn: sqlite3.Connection, iteration_id: str) -> Iteration | None:
+    """Return one iteration by id, or ``None`` when absent.
+
+    Symmetric to :func:`read_session` and :func:`latest_iteration_for` but
+    keyed on the row's primary key. Useful for the loop orchestrator
+    which mints an id, then later wants to re-read the canonical row to
+    pick up any timestamp / column normalisation SQLite applied.
+    """
+    cur = conn.execute("SELECT * FROM iterations WHERE id = ?", (iteration_id,))
+    row = cur.fetchone()
+    if row is None:
+        return None
+    return _row_to_iteration(row)
 
 
 def latest_iteration_for(conn: sqlite3.Connection, prompt_id: str) -> Iteration | None:
