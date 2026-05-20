@@ -254,6 +254,7 @@ async def iterate_loop(
     user_notes: dict[int, dict[int, str]] | None = None,
     convergence: ConvergenceConfig | None = None,
     dimensions_override: list[Dimension] | None = None,
+    session_id: str | None = None,
 ) -> IterationOutcome:
     """Run the full critique-and-revise loop for *prompt_id*.
 
@@ -303,6 +304,15 @@ async def iterate_loop(
     dimensions_override:
         Optional explicit dimension list; ``None`` runs
         :func:`load_dimensions` against the three-layer override stack.
+    session_id:
+        Optional pre-minted session id. When ``None`` (the default) the
+        loop mints its own via :func:`new_session_id` and the caller
+        reads it back off the returned :class:`IterationOutcome`. Callers
+        that need to surface the id *before* the loop starts (e.g. the
+        HTTP route layer that writes a placeholder row and returns the
+        id in a 202 response) supply their own id here. Passing one in
+        is backward-compatible with every existing call site because the
+        default-``None`` path matches the historical behaviour exactly.
 
     Returns
     -------
@@ -319,7 +329,7 @@ async def iterate_loop(
     judge_llm: LLMClient = judge_client or client
     critic_llm: LLMClient = critic_client or client
 
-    session_id = new_session_id()
+    session_id = session_id or new_session_id()
 
     # Load grounding once per session — the prompt's identity does not
     # change across rounds, only its template body.

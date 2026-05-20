@@ -232,6 +232,7 @@ def _make_stub_iterate_loop(
         user_notes=None,
         convergence=None,
         dimensions_override=None,
+        session_id=None,
     ):
         if capture is not None:
             capture["called"] = True
@@ -240,8 +241,12 @@ def _make_stub_iterate_loop(
             capture["manual_revisions"] = manual_revisions
             capture["prompt_id"] = prompt_id
             capture["dataset_id"] = dataset_id
+            capture["session_id"] = session_id
 
-        session_id = loop_module.new_session_id()
+        # Honour the route layer's pre-minted session_id (matches the
+        # real ``iterate_loop`` contract). Falling back to a fresh id
+        # keeps the stub callable in non-route tests if any are added.
+        session_id = session_id or loop_module.new_session_id()
         iterations_out: list[Iteration] = []
         conn = store_db_module.connect(settings.db_path)
         try:
@@ -333,10 +338,11 @@ async def test_post_iterate_returns_202_with_session_id_and_running_status(
     assert "session_id" in body
     # The session_id is a ULID — 26 characters.
     assert len(body["session_id"]) == 26
-    # Background task runs to completion inside the request lifecycle
-    # for FastAPI BackgroundTasks; we therefore expect the stub-written
-    # rows to be visible by now.
-    assert body["status"] in {"running", "converged"}
+    # FastAPI BackgroundTasks runs AFTER the response body is built;
+    # at this point only the placeholder row (round=0) exists, so the
+    # status derivation must report "running" — there are no real
+    # iteration rows yet for the converged path to ever fire.
+    assert body["status"] == "running"
 
 
 async def test_post_iterate_persists_placeholder_row_so_get_does_not_404(
@@ -740,3 +746,154 @@ async def test_post_iterate_background_exception_marks_session_failed(
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "failed", body
+
+
+# ---------------------------------------------------------------------------
+# Concurrency — two simultaneous POSTs must get distinct sessions
+# ---------------------------------------------------------------------------
+
+
+async def test_concurrent_iterate_sessions_get_distinct_session_ids(
+    client: AsyncClient,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two concurrent ``POST /api/iterate`` calls must get distinct session ids
+    and write rows under their own session — never each other's.
+
+    Regression guard for the historical ``unittest.mock.patch`` shim that
+    pinned ``new_session_id`` on the loop module. That approach was a
+    process-wide mutation: under interleaved ``await`` points the two
+    requests could observe each other's ``session_id`` (request B's
+    ``__enter__`` would capture A's lambda as "original", then A's
+    subsequent ``new_session_id()`` calls would resolve to B's id and
+    write rows under the wrong session). The fix is the explicit
+    ``session_id`` kwarg on :func:`iterate_loop` so each request's id
+    lives in a local-only stack frame.
+
+    Strategy:
+
+    1. Stub :func:`iterate_loop` with a coroutine that intentionally
+       yields control (``await asyncio.sleep(0)``) *between* reading
+       its ``session_id`` arg and writing its iteration row, so the
+       two concurrent stub bodies are forced to interleave at the
+       point a process-wide patch would have raced.
+    2. Fire two ``POST /api/iterate`` requests via ``asyncio.gather``.
+    3. Assert the two responses report distinct session ids AND that
+       each ``GET /api/iterations/{session_id}`` returns exactly the
+       iteration rows the loop wrote for *its own* session, no cross
+       contamination.
+    """
+    import asyncio
+
+    from aitap.iterate import loop as loop_module
+    from aitap.store import db as store_db_module
+
+    _seed_prompt(settings)
+
+    observed_session_ids: list[str] = []
+
+    async def interleaving_stub(
+        *,
+        settings,
+        prompt_id,
+        dataset_id,
+        client,
+        judge_client=None,
+        critic_client=None,
+        mode="auto",
+        instruction=None,
+        manual_revisions=None,
+        user_thumbs=None,
+        user_notes=None,
+        convergence=None,
+        dimensions_override=None,
+        session_id=None,
+    ) -> IterationOutcome:
+        # The route layer must always pass session_id explicitly under
+        # the fixed contract. A stub seeing None means the route
+        # regressed.
+        assert session_id is not None, "route must pass session_id kwarg"
+        observed_session_ids.append(session_id)
+
+        # Force interleaving: yield to the event loop AFTER reading the
+        # session_id arg, BEFORE writing the row. Under the historical
+        # mock.patch shim this is exactly the window where the other
+        # request's __enter__ would have stomped the module attribute
+        # and our subsequent loop_module.new_session_id() call would
+        # have returned the other request's id.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        # Write a single revise row tagged with our session_id so the
+        # GET assertion below can prove no cross-contamination.
+        iterations_out: list[Iteration] = []
+        conn = store_db_module.connect(settings.db_path)
+        try:
+            store_db_module.init_db(conn)
+            with store_db_module.transaction(conn, immediate=True):
+                iter_id = _write_iteration_row(
+                    conn,
+                    prompt_id=prompt_id,
+                    session_id=session_id,
+                    round_=1,
+                    is_baseline=True,
+                    weighted_score=0.42,
+                    revise_mode=None,
+                )
+                from aitap.store.iterations import read_iteration
+
+                persisted = read_iteration(conn, iter_id)
+                if persisted is not None:
+                    iterations_out.append(persisted)
+        finally:
+            conn.close()
+
+        return IterationOutcome(
+            session_id=session_id,
+            iterations=iterations_out,
+            converged_reason="max_rounds",
+            final_version=1,
+        )
+
+    # Sanity: loop_module import is the same module the route layer uses,
+    # so monkeypatching the route alias substitutes correctly.
+    assert loop_module.iterate_loop is loop_module.iterate_loop
+    monkeypatch.setattr("aitap.server.routes.iterate.iterate_loop", interleaving_stub)
+
+    # Fire two concurrent POSTs.
+    resp_a, resp_b = await asyncio.gather(
+        client.post("/api/iterate", json=_payload()),
+        client.post("/api/iterate", json=_payload()),
+    )
+    assert resp_a.status_code == 202, resp_a.text
+    assert resp_b.status_code == 202, resp_b.text
+
+    session_a = resp_a.json()["session_id"]
+    session_b = resp_b.json()["session_id"]
+
+    # The two requests must end up with distinct ids — minted
+    # independently by the route layer per request.
+    assert session_a != session_b
+
+    # Each background task observed the request's own id.
+    assert set(observed_session_ids) == {session_a, session_b}
+
+    # Cross-session integrity: GET each session and confirm only its
+    # own rows surface — never the other session's row.
+    get_a = await client.get(f"/api/iterations/{session_a}")
+    get_b = await client.get(f"/api/iterations/{session_b}")
+    assert get_a.status_code == 200
+    assert get_b.status_code == 200
+    body_a = get_a.json()
+    body_b = get_b.json()
+    assert body_a["session_id"] == session_a
+    assert body_b["session_id"] == session_b
+    # Both sessions wrote exactly one (non-placeholder) row tagged with
+    # their own id. If session-id pinning races, one body would report
+    # the row count for the wrong session.
+    for body, expected_session in ((body_a, session_a), (body_b, session_b)):
+        for it in body["iterations"]:
+            assert it["session_id"] == expected_session, (
+                f"session {expected_session} surfaced a foreign row: {it}"
+            )

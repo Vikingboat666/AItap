@@ -46,14 +46,17 @@ the worst case under a kill -9 is a stuck "running" status that
 
 session_id pinning
 ------------------
-:func:`aitap.iterate.loop.iterate_loop` mints its own session_id
-internally. The route layer pre-mints one (so it can write the
-placeholder and return it in the 202 body before the loop runs); we
-pin the loop to that id by monkey-patching the module-level
-``new_session_id`` symbol inside the loop module for the duration of
-the call. The loop's contract doesn't expose a session_id parameter,
-so the patch is the cleanest forward-compatible shim — when the loop
-gains an explicit override one day, we drop the patch.
+The route layer pre-mints a session_id so it can write the placeholder
+row and return the id in the 202 body before the background task
+starts. We pass that id straight through to
+:func:`aitap.iterate.loop.iterate_loop` via its ``session_id`` kwarg;
+the loop uses the supplied id verbatim (and skips its internal
+:func:`new_session_id` call), guaranteeing the placeholder and the
+loop's first real iteration row share the same primary-key triple.
+This is the *only* correct pinning strategy under concurrent requests:
+two simultaneous POSTs each have their own kwarg-bound local, so they
+cannot stomp on each other the way a shared module-level monkey-patch
+would.
 """
 
 from __future__ import annotations
@@ -62,7 +65,6 @@ import logging
 import sqlite3
 from datetime import datetime, timezone
 from typing import Annotated, Literal
-from unittest.mock import patch
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -73,7 +75,9 @@ from aitap.playground import dispatch as playground_dispatch
 from aitap.server.routes._deps import get_db, get_settings
 from aitap.store import db as store_db
 from aitap.store.iterations import (
+    ConvergedReason,
     Iteration,
+    ReviseMode,
     insert_iteration,
     new_session_id,
     read_iterations_for,
@@ -137,13 +141,13 @@ class IterationView(BaseModel):
     is_baseline: bool
     parent_version: int | None = None
     new_version: int | None = None
-    revise_mode: str | None = None
+    revise_mode: ReviseMode | None = None
     revise_instruction: str | None = None
     critique_text: str | None = None
     weighted_score: float
     per_dim_scores: dict[str, float] = Field(default_factory=dict)
     downstream_status: dict[str, str] | None = None
-    converged_reason: str | None = None
+    converged_reason: ConvergedReason | None = None
     started_at: str
     finished_at: str | None = None
 
@@ -368,26 +372,24 @@ async def _run_iterate_in_background(
         client = playground_dispatch._client_factory(  # pyright: ignore[reportPrivateUsage]
             settings.provider.name, settings.provider.model
         )
-        # Pin the loop's session_id to our pre-minted one by patching
-        # the module-level ``new_session_id`` symbol inside the loop
-        # module. This is the minimum-surface workaround for the loop's
-        # not-yet-parameterised session id.
-        with patch(
-            "aitap.iterate.loop.new_session_id",
-            lambda: session_id,
-        ):
-            await iterate_loop(
-                settings=settings,
-                prompt_id=payload.prompt_id,
-                dataset_id=payload.dataset_id,
-                client=client,
-                mode=payload.mode,
-                instruction=payload.instruction,
-                manual_revisions=payload.manual_revisions,
-                user_thumbs=payload.user_thumbs,
-                user_notes=payload.user_notes,
-                convergence=payload.convergence,
-            )
+        # Pin the loop to our pre-minted session_id via the loop's
+        # explicit kwarg. This is concurrency-safe — two simultaneous
+        # POSTs each pass their own id through the call stack, so
+        # neither can observe the other's id (unlike a shared
+        # module-level monkey-patch, which would race).
+        await iterate_loop(
+            settings=settings,
+            prompt_id=payload.prompt_id,
+            dataset_id=payload.dataset_id,
+            client=client,
+            mode=payload.mode,
+            instruction=payload.instruction,
+            manual_revisions=payload.manual_revisions,
+            user_thumbs=payload.user_thumbs,
+            user_notes=payload.user_notes,
+            convergence=payload.convergence,
+            session_id=session_id,
+        )
     except Exception:
         _LOGGER.exception(
             "iterate background task failed for session %s (prompt %s)",
