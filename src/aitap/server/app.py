@@ -75,6 +75,7 @@ _OPTIONAL_ROUTERS: tuple[tuple[str, str], ...] = (
     ("aitap.server.routes.runs", "router"),
     ("aitap.server.routes.settings", "router"),
     ("aitap.server.routes.history", "router"),
+    ("aitap.server.routes.iterate", "router"),
 )
 
 
