@@ -14,6 +14,8 @@
  */
 import { http, HttpResponse } from "msw";
 
+import type { IterateSessionResponse } from "../api/generated/models/IterateSessionResponse";
+import type { IterationView } from "../api/generated/models/IterationView";
 import type { PipelineDetailResponse } from "../api/generated/models/PipelineDetailResponse";
 import type { PipelineListResponse } from "../api/generated/models/PipelineListResponse";
 import type { PromptDetailResponse } from "../api/generated/models/PromptDetailResponse";
@@ -143,6 +145,74 @@ export const pipelineDetailFixture: PipelineDetailResponse = {
       latest_version: 1,
     },
   },
+};
+
+/**
+ * Iteration fixtures — used by AutoIterate / IterationProgress /
+ * IterationTimeline / DownstreamImpactBanner tests. Kept here so any
+ * test in the suite can `server.use(...)` to override one endpoint
+ * without re-declaring the entire fixture surface.
+ */
+export const iterationBaselineFixture: IterationView = {
+  id: "it_baseline",
+  prompt_id: "p_test_alpha",
+  round: 1,
+  session_id: "sess_test_alpha",
+  is_baseline: true,
+  parent_version: 1,
+  new_version: null,
+  revise_mode: null,
+  revise_instruction: null,
+  critique_text: null,
+  weighted_score: 0.62,
+  per_dim_scores: { accuracy: 0.6, relevance: 0.7, safety: 0.6, format: 0.5 },
+  downstream_status: null,
+  converged_reason: null,
+  started_at: "2026-05-20T10:00:00Z",
+  finished_at: "2026-05-20T10:00:30Z",
+};
+
+export const iterationRound2Fixture: IterationView = {
+  id: "it_round2",
+  prompt_id: "p_test_alpha",
+  round: 2,
+  session_id: "sess_test_alpha",
+  is_baseline: false,
+  parent_version: 1,
+  new_version: 2,
+  revise_mode: "auto",
+  revise_instruction: null,
+  critique_text: "increased specificity in the system message",
+  weighted_score: 0.81,
+  per_dim_scores: { accuracy: 0.85, relevance: 0.83, safety: 0.75, format: 0.8 },
+  downstream_status: { draft: "unverified", polish: "unverified" },
+  converged_reason: "delta",
+  started_at: "2026-05-20T10:01:00Z",
+  finished_at: "2026-05-20T10:01:30Z",
+};
+
+export const iterateSessionRunningFixture: IterateSessionResponse = {
+  session_id: "sess_test_alpha",
+  status: "running",
+  converged_reason: null,
+  iterations: [iterationBaselineFixture],
+  final_version: null,
+};
+
+export const iterateSessionConvergedFixture: IterateSessionResponse = {
+  session_id: "sess_test_alpha",
+  status: "converged",
+  converged_reason: "delta",
+  iterations: [iterationBaselineFixture, iterationRound2Fixture],
+  final_version: 2,
+};
+
+export const iterateSessionFailedFixture: IterateSessionResponse = {
+  session_id: "sess_test_failed",
+  status: "failed",
+  converged_reason: "critic_failed",
+  iterations: [iterationBaselineFixture],
+  final_version: null,
 };
 
 export const handlers = [
