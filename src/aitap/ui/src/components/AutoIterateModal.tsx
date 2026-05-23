@@ -47,8 +47,16 @@ export type AutoIterateMode = "auto" | "guided" | "manual";
 export interface AutoIterateModalProps {
   /** Prompt id to iterate. Disabled when null. */
   promptId: string | null;
-  /** Dataset id to evaluate against. Disabled when null. */
-  datasetId: string | null;
+  /**
+   * Optional initial seed for the dataset id input. The user can always
+   * edit the value after the modal opens; we no longer accept a fixed
+   * `datasetId` prop because the dataset must match an existing file at
+   * `.aitap/datasets/<name>.cases.jsonl` — silently substituting the
+   * prompt id (the previous fallback) produced empty cases lists and a
+   * loop that "converged" with zero scores. Treat this as a default
+   * only; the canonical value lives in modal state.
+   */
+  initialDatasetId?: string | null;
   /** Close (cancel) the modal without starting. */
   onClose: () => void;
   /** Fires with the freshly-minted session response on success. */
@@ -57,26 +65,33 @@ export interface AutoIterateModalProps {
 
 export function AutoIterateModal({
   promptId,
-  datasetId,
+  initialDatasetId,
   onClose,
   onStart,
 }: AutoIterateModalProps) {
   const [mode, setMode] = useState<AutoIterateMode>("auto");
   const [instruction, setInstruction] = useState("");
   const [manualText, setManualText] = useState("");
+  // Dataset id is now a first-class form field. Default to "" so the
+  // Start button stays disabled until the user types a real value;
+  // `initialDatasetId` is only used when the caller (e.g. a dataset
+  // picker page) wants to pre-populate the field.
+  const [datasetId, setDatasetId] = useState<string>(initialDatasetId ?? "");
   const [showConvergence, setShowConvergence] = useState(false);
   const [convergence, setConvergence] = useState<ConvergenceConfig>(
     DEFAULT_CONVERGENCE_CONFIG,
   );
 
+  const trimmedDatasetId = datasetId.trim();
+
   const startMutation = useMutation({
     mutationFn: async () => {
-      if (!promptId || !datasetId) {
+      if (!promptId || trimmedDatasetId.length === 0) {
         throw new Error("prompt + dataset must be selected before starting");
       }
       const requestBody: IterateSessionRequest = {
         prompt_id: promptId,
-        dataset_id: datasetId,
+        dataset_id: trimmedDatasetId,
         mode,
         instruction: mode === "guided" ? instruction.trim() : null,
         manual_revisions:
@@ -95,9 +110,10 @@ export function AutoIterateModal({
   // Mode-specific input validation: empty trimmed inputs disable Start.
   const guidedReady = mode !== "guided" || instruction.trim().length > 0;
   const manualReady = mode !== "manual" || manualText.trim().length > 0;
+  const datasetReady = trimmedDatasetId.length > 0;
   const canStart =
     !!promptId &&
-    !!datasetId &&
+    datasetReady &&
     guidedReady &&
     manualReady &&
     !startMutation.isPending;
@@ -133,6 +149,36 @@ export function AutoIterateModal({
         </div>
 
         <div className="space-y-4 px-4 py-4">
+          <section>
+            <label
+              htmlFor="auto-iterate-dataset"
+              className="mb-1 block text-[11px] uppercase text-ink-400"
+            >
+              dataset
+            </label>
+            <input
+              id="auto-iterate-dataset"
+              type="text"
+              value={datasetId}
+              onChange={(e) => setDatasetId(e.target.value)}
+              placeholder="e.g. email_summarize"
+              className="w-full rounded-md border border-ink-200 px-2 py-1 text-xs focus:border-brand-500 focus:outline-none"
+            />
+            <div className="mt-1 text-[10px] italic text-ink-500">
+              Dataset file under{" "}
+              <code className="font-mono text-ink-700">
+                .aitap/datasets/&lt;name&gt;.cases.jsonl
+              </code>
+              . Use the <code className="font-mono text-ink-700">aitap</code>{" "}
+              CLI to create a dataset, or provide an existing name.
+            </div>
+            {!datasetReady && (
+              <div className="mt-1 text-[11px] italic text-amber-700">
+                dataset name is required
+              </div>
+            )}
+          </section>
+
           <section>
             <div className="mb-2 text-[11px] uppercase text-ink-400">
               mode
@@ -243,7 +289,7 @@ export function AutoIterateModal({
 
         <div className="flex items-center justify-between border-t border-ink-100 bg-ink-50/60 px-4 py-3">
           <div className="flex items-center gap-2 text-[11px] text-ink-500">
-            {!promptId || !datasetId ? (
+            {!promptId || !datasetReady ? (
               <Badge tone="warn">prompt + dataset required</Badge>
             ) : (
               <Badge tone="brand">{mode}</Badge>
@@ -261,6 +307,11 @@ export function AutoIterateModal({
               type="button"
               disabled={!canStart}
               onClick={() => startMutation.mutate()}
+              title={
+                !datasetReady
+                  ? "Provide a dataset name"
+                  : "start the auto-iterate session"
+              }
               className={clsx(
                 "rounded-md px-3 py-1.5 text-xs font-medium text-white",
                 canStart

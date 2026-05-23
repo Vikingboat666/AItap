@@ -391,12 +391,14 @@ export function Playground() {
       {iterateModalOpen && selectedTarget?.kind === "prompt" && (
         <AutoIterateModal
           promptId={selectedTarget.id}
-          // The session API needs a dataset id; until the dataset
-          // picker UI lands we reuse the prompt id as a stand-in (the
-          // backend loop ultimately reads cases from the dataset row).
-          // Surface the constraint to users via the modal's badge so
-          // the placeholder is visible rather than mysterious.
-          datasetId={selectedTarget.id}
+          // No `initialDatasetId` here — datasets live under
+          // `.aitap/datasets/<name>.cases.jsonl` and have no derivable
+          // mapping from a prompt id. We previously seeded with
+          // `selectedTarget.id` to mask a missing picker UI, but the
+          // backend silently treats unknown ids as an empty case list
+          // (every round scores 0 → "converged via max_rounds" with a
+          // flat-zero chart). The modal now requires the user to type
+          // the dataset name explicitly.
           onClose={() => setIterateModalOpen(false)}
           onStart={(session) => {
             setIterateSession(session);

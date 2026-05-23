@@ -16,11 +16,13 @@
  *
  * Polling cadence is 1500ms — fast enough to feel reactive on a 2-3s
  * LLM round, slow enough to avoid hammering SQLite while a background
- * task writes the next iteration row. The interval is bypassed (set to
- * `false`) once we hit a terminal status; React Query then stops
- * scheduling refetches.
+ * task writes the next iteration row. Polling stops as soon as the
+ * *session* query reports `converged` or `failed`; the `latest` query
+ * piggybacks on that signal via its `enabled` flag, so a failed-via-
+ * placeholder session (where `/latest` 404s forever) still terminates
+ * cleanly instead of polling indefinitely.
  *
- * Tests bypass real polling by mocking the latest endpoint to return a
+ * Tests bypass real polling by mocking the session endpoint to return a
  * terminal status on the first call; the component degrades to a single
  * fetch in that case. See `IterationProgress.test.tsx`.
  */
@@ -101,9 +103,39 @@ export function IterationProgress({
   pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
   onTerminal,
 }: IterationProgressProps) {
-  // Single source of truth for status — the "latest" poll is the live
-  // tick, the full session is fetched once we hit a terminal state.
-  const latestQ = useQuery<IterationView | null>({
+  // The session query is the canonical source of `status` — both the
+  // happy path and the failed-via-placeholder path land here. Polling
+  // stops as soon as the session reports a terminal status.
+  const sessionQ = useQuery<IterateSessionResponse>({
+    queryKey: ["iteration-session", sessionId],
+    queryFn: () =>
+      IterateService.getIterateSessionApiIterationsSessionIdGet({ sessionId }),
+    // Always run once on mount so we have a status from the start (the
+    // POST response is also a session response but the parent may not
+    // have threaded it through). Re-run on every poll so we catch the
+    // moment the background task completes.
+    enabled: true,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      if (status === "converged" || status === "failed") return false;
+      return pollIntervalMs;
+    },
+    refetchOnWindowFocus: false,
+  });
+
+  // The "latest" poll is the live row tick, used to drive the spinner
+  // and any per-round summary. It piggybacks on the session query for
+  // its stop condition — when `sessionQ.data?.status` is terminal, we
+  // disable this query entirely. This avoids the failed-via-placeholder
+  // trap where `/latest` 404s forever (placeholder filtered out) and a
+  // `converged_reason`-only check would never stop polling.
+  const sessionStatus = sessionQ.data?.status;
+  const isTerminalStatus =
+    sessionStatus === "converged" || sessionStatus === "failed";
+  // The hook return is intentionally discarded — we keep the query
+  // registered so it stays warm in the cache for any sibling component
+  // that mounts later, but the bars + header read off `sessionQ` only.
+  useQuery<IterationView | null>({
     queryKey: ["iteration-latest", sessionId],
     queryFn: async () => {
       try {
@@ -116,42 +148,8 @@ export function IterationProgress({
         return null;
       }
     },
-    refetchInterval: (query) => {
-      // Continue polling unless we have observed a terminal status on the
-      // *session* endpoint below. The latest endpoint alone can't tell us
-      // — `converged_reason` is on the row, but `failed` lives in the
-      // session derivation. We pessimistically keep polling until the
-      // session query reports a terminal status.
-      const last = query.state.data;
-      if (last?.converged_reason && last.converged_reason !== null) {
-        return false;
-      }
-      return pollIntervalMs;
-    },
-    refetchOnWindowFocus: false,
-  });
-
-  // The latest poll's terminal-likely signal lets us short-circuit the
-  // session refetchInterval below without waiting for its own latency.
-  // Kept as a `void` reference (the boolean is only read inside the
-  // `refetchInterval` lambda via React Query's state machinery) to make
-  // the dependency explicit for future readers.
-  void latestQ.data?.converged_reason;
-
-  const sessionQ = useQuery<IterateSessionResponse>({
-    queryKey: ["iteration-session", sessionId],
-    queryFn: () =>
-      IterateService.getIterateSessionApiIterationsSessionIdGet({ sessionId }),
-    // Always run once on mount so we have a status from the start (the
-    // POST response is also a session response but the parent may not
-    // have threaded it through). Re-run on every latest tick so we
-    // catch the moment the background task completes.
-    enabled: true,
-    refetchInterval: (query) => {
-      const status = query.state.data?.status;
-      if (status === "converged" || status === "failed") return false;
-      return pollIntervalMs;
-    },
+    enabled: !isTerminalStatus,
+    refetchInterval: isTerminalStatus ? false : pollIntervalMs,
     refetchOnWindowFocus: false,
   });
 
@@ -159,7 +157,7 @@ export function IterationProgress({
   // outer button label, dismiss spinners, etc). Effect rather than
   // onSuccess because we want the callback to fire exactly once per
   // terminal observation; effect-with-ref dedupes.
-  const lastNotifiedStatus = useNotifyTerminal(sessionQ.data, onTerminal);
+  useNotifyTerminal(sessionQ.data, onTerminal);
 
   // The bars feed off the full session iterations list — `latest`
   // alone is one row, useless for trend rendering.
@@ -184,7 +182,6 @@ export function IterationProgress({
         maxRounds={maxRounds}
         finalVersion={sessionQ.data?.final_version ?? null}
         convergedReason={sessionQ.data?.converged_reason ?? null}
-        notifiedStatus={lastNotifiedStatus}
       />
 
       {status === "failed" ? (
@@ -213,13 +210,13 @@ export function IterationProgress({
 
 /**
  * Fire `onTerminal` exactly once per session, the first time we observe
- * a terminal status. Returns the status that was last announced so the
- * caller can render "fired" affordances if needed.
+ * a terminal status. The hook owns its own "have we announced yet"
+ * cursor; callers don't need to know whether it fired.
  */
 function useNotifyTerminal(
   session: IterateSessionResponse | undefined,
   onTerminal: ((s: IterateSessionResponse) => void) | undefined,
-): IterateSessionResponse["status"] | null {
+): void {
   const [announced, setAnnounced] = useState<
     IterateSessionResponse["status"] | null
   >(null);
@@ -231,8 +228,6 @@ function useNotifyTerminal(
     setAnnounced(session.status);
     onTerminal?.(session);
   }, [session, announced, onTerminal]);
-
-  return announced;
 }
 
 interface ProgressHeaderProps {
@@ -241,7 +236,6 @@ interface ProgressHeaderProps {
   maxRounds: number;
   finalVersion: number | null;
   convergedReason: string | null;
-  notifiedStatus: IterateSessionResponse["status"] | null;
 }
 
 function ProgressHeader({
@@ -250,7 +244,6 @@ function ProgressHeader({
   maxRounds,
   finalVersion,
   convergedReason,
-  notifiedStatus,
 }: ProgressHeaderProps) {
   let subtitle: string;
   if (status === "running") {
@@ -273,7 +266,7 @@ function ProgressHeader({
             {status === "running" && (
               <Spinner aria-label="iteration in progress" />
             )}
-            <StatusBadge status={status} notified={notifiedStatus} />
+            <StatusBadge status={status} />
             {finalVersion != null && (
               <Badge tone="brand">v{finalVersion}</Badge>
             )}
@@ -286,16 +279,15 @@ function ProgressHeader({
 
 function StatusBadge({
   status,
-  notified: _notified,
 }: {
   status: IterateSessionResponse["status"];
-  notified: IterateSessionResponse["status"] | null;
 }) {
-  // `_notified` is kept in the props so unit tests can spy on the
-  // notification path via `data-status`; we don't currently render it.
   if (status === "running") return <Badge tone="warn">running</Badge>;
   if (status === "converged") return <Badge tone="ok">converged</Badge>;
-  return <Badge tone="warn">failed</Badge>;
+  // Use the rose `err` tone so the inline badge matches the rose
+  // FailureBanner's severity — previously we rendered amber/warn here
+  // while the banner was rose, giving conflicting affordances.
+  return <Badge tone="err">failed</Badge>;
 }
 
 function Spinner({ "aria-label": label }: { "aria-label": string }) {

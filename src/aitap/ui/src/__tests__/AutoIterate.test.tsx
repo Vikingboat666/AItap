@@ -25,7 +25,7 @@ describe("AutoIterateModal", () => {
     renderWithProviders(
       <AutoIterateModal
         promptId="p_test_alpha"
-        datasetId="ds_alpha"
+        initialDatasetId="ds_alpha"
         onClose={() => {}}
         onStart={() => {}}
       />,
@@ -56,7 +56,7 @@ describe("AutoIterateModal", () => {
     renderWithProviders(
       <AutoIterateModal
         promptId="p_test_alpha"
-        datasetId="ds_alpha"
+        initialDatasetId="ds_alpha"
         onClose={() => {}}
         onStart={() => {}}
       />,
@@ -82,7 +82,7 @@ describe("AutoIterateModal", () => {
     renderWithProviders(
       <AutoIterateModal
         promptId="p_test_alpha"
-        datasetId="ds_alpha"
+        initialDatasetId="ds_alpha"
         onClose={() => {}}
         onStart={() => {}}
       />,
@@ -118,7 +118,7 @@ describe("AutoIterateModal", () => {
     renderWithProviders(
       <AutoIterateModal
         promptId="p_test_alpha"
-        datasetId="ds_alpha"
+        initialDatasetId="ds_alpha"
         onClose={() => {}}
         onStart={onStart}
       />,
@@ -135,6 +135,85 @@ describe("AutoIterateModal", () => {
     expect(captured).toMatchObject({
       prompt_id: "p_test_alpha",
       dataset_id: "ds_alpha",
+      mode: "auto",
+    });
+  });
+
+  it("disables Start when dataset id is missing (no initial seed)", async () => {
+    // No `initialDatasetId` — the modal field starts empty, so the
+    // Start button must stay disabled until the user types a value.
+    // Prior to the blocker fix the modal silently fell back to the
+    // prompt id; that produced empty case lists and zero scores
+    // server-side. Guard with both the disabled assertion *and* the
+    // typed-then-enabled flip so a future regression that re-seeds
+    // from prompt_id is caught.
+    const user = userEvent.setup();
+    renderWithProviders(
+      <AutoIterateModal
+        promptId="p_test_alpha"
+        onClose={() => {}}
+        onStart={() => {}}
+      />,
+    );
+
+    const start = screen.getByRole("button", {
+      name: /start auto-iterate/i,
+    });
+    expect(start).toBeDisabled();
+
+    // Helper copy + warn badge confirm the gate is visible to the user.
+    expect(
+      screen.getByText(/dataset name is required/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/prompt \+ dataset required/i),
+    ).toBeInTheDocument();
+
+    // Typing a dataset name enables Start.
+    await user.type(
+      screen.getByLabelText(/^dataset$/i),
+      "email_summarize",
+    );
+    expect(start).not.toBeDisabled();
+  });
+
+  it("POSTs the user-provided dataset_id (not a prompt-id fallback)", async () => {
+    const user = userEvent.setup();
+    const onStart = vi.fn();
+
+    let captured: Record<string, unknown> | null = null;
+    server.use(
+      http.post("/api/iterate", async ({ request }) => {
+        captured = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json(iterateSessionRunningFixture, { status: 202 });
+      }),
+    );
+
+    renderWithProviders(
+      <AutoIterateModal
+        promptId="p_test_alpha"
+        onClose={() => {}}
+        onStart={onStart}
+      />,
+    );
+
+    // Type a dataset value distinct from any prompt id so a regression
+    // that fell back to `prompt_id` would surface as a mismatch here.
+    await user.type(
+      screen.getByLabelText(/^dataset$/i),
+      "  email_summarize  ",
+    );
+    await user.click(
+      screen.getByRole("button", { name: /start auto-iterate/i }),
+    );
+
+    await waitFor(() => {
+      expect(onStart).toHaveBeenCalledTimes(1);
+    });
+    // The dataset id is trimmed before going on the wire.
+    expect(captured).toMatchObject({
+      prompt_id: "p_test_alpha",
+      dataset_id: "email_summarize",
       mode: "auto",
     });
   });

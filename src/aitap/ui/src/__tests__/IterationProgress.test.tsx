@@ -117,9 +117,89 @@ describe("IterationProgress", () => {
     expect(alert).toHaveTextContent(/the critic failed/i);
     expect(alert.className).toMatch(/rose/);
 
-    // The "failed" status badge is also surfaced.
-    expect(
-      screen.getByText(/failed/i, { selector: "span" }),
-    ).toBeInTheDocument();
+    // The "failed" status badge is also surfaced — rose tone now so it
+    // visually matches the FailureBanner above (the tone class names
+    // include `rose` for the err palette).
+    const failedBadge = screen.getByText(/failed/i, { selector: "span" });
+    expect(failedBadge).toBeInTheDocument();
+    expect(failedBadge.className).toMatch(/rose/);
+  });
+
+  it("stops polling once the session reports a terminal status", async () => {
+    // Drive polling with real timers but a tight interval (20ms) so the
+    // test doesn't have to wait long. The session handler counts how
+    // many times it's been called; once it has been called twice we
+    // flip it to return a terminal status. After that observation the
+    // polling should freeze — we assert the count plateaus by sampling
+    // it at two well-spaced points.
+    let sessionCalls = 0;
+    server.use(
+      http.get("/api/iterations/sess_polling_stop", () => {
+        sessionCalls += 1;
+        if (sessionCalls < 2) {
+          return HttpResponse.json(iterateSessionRunningFixture);
+        }
+        return HttpResponse.json(iterateSessionConvergedFixture);
+      }),
+      http.get(
+        "/api/iterations/sess_polling_stop/latest",
+        () => HttpResponse.json(iterationBaselineFixture),
+      ),
+    );
+
+    renderWithProviders(
+      <IterationProgress
+        sessionId="sess_polling_stop"
+        pollIntervalMs={20}
+      />,
+    );
+
+    // Wait until the terminal status renders (proxy for "we observed
+    // converged"). After this the polling stop-condition kicks in.
+    await screen.findByText(/converged/i, { selector: "span" });
+
+    // Snapshot the call count at the moment polling should stop, then
+    // wait long enough that — if the stop didn't work — many more
+    // polls would have fired.
+    const callsAfterConverged = sessionCalls;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    // Allow at most one trailing in-flight call after the terminal
+    // observation (React Query may have one queued already); anything
+    // more than that means the refetchInterval kept firing.
+    expect(sessionCalls).toBeLessThanOrEqual(callsAfterConverged + 1);
+  });
+
+  it("stops polling /latest once the session reports failed", async () => {
+    // failed-via-placeholder regression test. /latest 404s forever in
+    // that scenario; before the fix the latest query polled
+    // indefinitely because `converged_reason` was always null. The
+    // sessionQ-based gate is the only thing that stops it.
+    let latestCalls = 0;
+    server.use(
+      http.get("/api/iterations/sess_polling_failed", () =>
+        HttpResponse.json(iterateSessionFailedFixture),
+      ),
+      http.get("/api/iterations/sess_polling_failed/latest", () => {
+        latestCalls += 1;
+        return new HttpResponse(
+          JSON.stringify({ detail: "no rows" }),
+          { status: 404, headers: { "content-type": "application/json" } },
+        );
+      }),
+    );
+
+    renderWithProviders(
+      <IterationProgress
+        sessionId="sess_polling_failed"
+        pollIntervalMs={20}
+      />,
+    );
+
+    // Wait for the failure banner to confirm we have observed failed.
+    await screen.findByRole("alert");
+    const callsAfterFailed = latestCalls;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(latestCalls).toBeLessThanOrEqual(callsAfterFailed + 1);
   });
 });

@@ -161,11 +161,14 @@ export function IterationTimeline({ promptId }: IterationTimelineProps) {
 
 function SessionRow({ group }: { group: SessionGroup }) {
   const [open, setOpen] = useState(false);
+  // Match the IterationProgress tone scheme: failed sessions get the
+  // rose `err` palette so the inline status badge agrees visually with
+  // the rose-red failure banners further down the page.
   const tone =
     group.status === "converged"
       ? "ok"
       : group.status === "failed"
-        ? "warn"
+        ? "err"
         : "warn";
   return (
     <li className="px-4 py-3 text-xs">
