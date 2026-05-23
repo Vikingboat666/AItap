@@ -228,7 +228,8 @@ def _validate_pipeline_mode(payload: RunCreate) -> None:
       here; the runner ignores them and a lenient backend keeps the
       additive contract change non-breaking for clients that send stray
       defaults.
-    - ``pipeline_mode == "node"``: requires ``pipeline_node_id``; must not
+    - ``pipeline_mode == "node"``: requires a **non-empty**
+      ``pipeline_node_id`` (a blank string is treated as missing); must not
       also carry ``pipeline_segment`` (ambiguous — which one wins?).
     - ``pipeline_mode == "segment"``: requires a **non-empty**
       ``pipeline_segment`` (an empty list is the "zero-node segment
@@ -255,8 +256,13 @@ def _validate_pipeline_mode(payload: RunCreate) -> None:
         return
 
     if mode == "node":
-        if payload.pipeline_node_id is None:
-            _raise_422("pipeline_mode='node' requires pipeline_node_id")
+        if not payload.pipeline_node_id:
+            # ``not`` (rather than ``is None``) so a blank ``""`` is treated
+            # as missing too — symmetric with the segment branch's empty-list
+            # check below. Otherwise an empty string slips past here and only
+            # fails deep in the runner as a 500 ("node not found") instead of
+            # a clean 422.
+            _raise_422("pipeline_mode='node' requires a non-empty pipeline_node_id")
         if payload.pipeline_segment is not None:
             _raise_422(
                 "pipeline_mode='node' must not carry pipeline_segment; send only pipeline_node_id"

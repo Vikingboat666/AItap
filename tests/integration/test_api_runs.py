@@ -390,6 +390,25 @@ async def test_pipeline_node_mode_missing_node_id_422(
     assert "pipeline_node_id" in resp.json()["detail"]
 
 
+async def test_pipeline_node_mode_blank_node_id_422(
+    client: AsyncClient,
+    settings: Settings,
+) -> None:
+    """mode='node' with a blank pipeline_node_id 422s like a missing one.
+
+    A blank string would otherwise slip past the route check and only fail
+    deep in the runner as a 500 ("node not found"); we treat ``""`` as
+    missing, symmetric with the empty-segment guard.
+    """
+    _seed_two_node_pipeline(settings)
+    resp = await client.post(
+        "/api/runs",
+        json=_pipeline_run_payload(mode="node", node_id=""),
+    )
+    assert resp.status_code == 422, resp.text
+    assert "pipeline_node_id" in resp.json()["detail"]
+
+
 async def test_pipeline_segment_mode_none_segment_422(
     client: AsyncClient,
     settings: Settings,
