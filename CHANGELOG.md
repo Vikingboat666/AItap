@@ -6,6 +6,59 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.1.0a3] — 2026-05-23
+
+Wave 4 — M4 self-iteration loop lands. `aitap` can now run a real critique-and-revise loop: an LLM-as-judge scores each round on multiple dimensions, a critic rewrites the prompt (auto / guided / manual), and the loop converges against a baseline-relative target. Driven entirely from the Web Playground's Auto-iterate panel against the `/api/iterate` session endpoints.
+
+### Added
+
+**LLM-as-judge** (Wave 4 wt/judge)
+- `aitap.iterate.judge.score_outputs` — grades per-case outputs (read from the `.aitap/runs/<id>/outputs.jsonl` sidecar) along a configurable list of `Dimension`s; one LLM call per case so a single bad case never poisons its siblings. Unparseable judge responses degrade to a zero score rather than crashing the round.
+- `judge_defaults` / `judge_models` — a default multi-dimension rubric (user-overridable per Decision 1) plus the pydantic shapes for `Dimension` / `JudgeScore`.
+- Provider-agnostic: the only LLM dependency is the `LLMClient` ABC; the suite stays offline via `MockLLMClient`.
+
+**Critique-and-revise** (Wave 4 wt/critic)
+- `aitap.iterate.critic.revise` — single entry point over three modes (Decision 2): `auto` (free LLM rewrite), `guided` (rewrite under a user instruction), `manual` (user supplies the full template, no LLM). Returns a `RevisedPrompt` value only — persistence is the loop's transaction boundary, keeping the two-writer race out of the critic. Critic calls use `temperature=0` for deterministic convergence.
+
+**Impact analyzer** (Wave 4 wt/impact, Decision 4)
+- `aitap.iterate.impact` — pure, no-LLM, no-DB graph half of the loop. `analyze` BFS-walks the scanner `Pipeline` DAG from the iterated node and returns each downstream consumer with hop distance + traversed edge kinds; `assess_status` classifies each node `verified` / `regressed` / `improved` / `unverified` from before/after weighted scores; `serialize_status_for_iterations` projects to the `{node_id: status}` shape persisted on `iterations.downstream_status`. Downstream re-run is warn-by-default, opt-in.
+
+**Loop orchestrator** (Wave 4 wt/loop)
+- `aitap.iterate.iterate_loop` — ties judge + critic + impact + iterations DAO into one `/iterate` session: baseline round → per-round aggregate-feedback → critic revise → atomic (new `prompt_versions` row + dispatch + judge score + iteration row in a single `transaction`) → convergence check. Convergence priority (Decision 3): delta-from-baseline > absolute target > stagnation-window > max-rounds; no absolute default.
+- `ConvergenceConfig` — `delta_from_baseline=0.15`, `stagnation_window=3` / `epsilon=0.02`, `max_rounds=5`.
+
+**Iterations persistence** (Wave 4 wt/store, Decision 5)
+- New `iterations` table + `aitap.store.iterations` DAO records each round's scores, converged reason, final version, and downstream-impact JSON.
+
+**Per-case output sidecar** (Wave 4 prereq wt/runs)
+- The playground dispatch now persists per-case run outputs to `.aitap/runs/<id>/outputs.jsonl` (deferred from 0.1.0a2) — the judge reads this sidecar.
+
+**Iterate API** (Wave 4 wt/api-iterate)
+- `POST /api/iterate` (202 + pre-minted `session_id`), `GET /api/iterations/{session_id}`, `GET /api/iterations/{session_id}/latest`, `GET /api/iterations/by-prompt/{prompt_id}`. The loop runs as a FastAPI `BackgroundTask`; a failed run updates its placeholder row to a `failed` sentinel in place.
+
+**Web UI** (Wave 4 wt/ui-iterate)
+- `AutoIterateModal` — pick prompt + dataset, choose revise mode, optionally expand a convergence-config form, start a background session. Dataset is an explicit, required text field (matching `.aitap/datasets/<name>.cases.jsonl`).
+- `IterationProgress` — polls session status, renders per-round multi-dimension score bars + converged reason + final version; polling stops on terminal status.
+- `IterationTimeline` — history of iteration sessions per prompt.
+- `DownstreamImpactBanner` — surfaces "N unverified consumers" when the iterated prompt sits upstream in a pipeline.
+
+### Changed
+
+- `aitap.iterate` re-exports the full `iterate_loop` / `ConvergenceConfig` from `loop.py` while keeping the Wave 3 `iterate_one_round` stub for the existing `POST /api/runs/{id}/iterate` single-round fallback.
+
+### Quality
+
+- 502 backend tests (was 356 in 0.1.0a2) + 24 UI component tests (was 6).
+- Pyright strict + ruff clean across Python 3.10/3.11/3.12.
+- Every Wave 4 worktree merged via squash PR after the four-gate bar (pyright/ruff + backend tests + frontend lint/test/build + Opus 4.7 review to ACCEPT).
+
+### Known limits / not yet shipped
+
+- Self-iteration is Playground-driven only; no `aitap iterate` CLI command yet.
+- Image-prompt grid view — 0.1.0a4 (M5).
+- Pipeline `segment` mode UI control — M5.
+- TypeScript scan support, runtime data capture — v0.2.
+
 ## [0.1.0a2] — 2026-05-17
 
 Wave 3 — M3 Web Playground lands. CLI now opens a real React app instead of a "coming soon" stub; every page (Inventory / PromptDetail / PipelineDetail / Playground / History) hits the live FastAPI surface.
@@ -120,6 +173,7 @@ First pre-alpha. Wave 1 + Wave 2 features. CLI-only — Web Playground (M3) land
 
 - pyproject.toml, directory layout, ruff/pyright/pre-commit configs, contracts doc.
 
-[Unreleased]: https://github.com/Vikingboat666/AItap/compare/v0.1.0a2...HEAD
+[Unreleased]: https://github.com/Vikingboat666/AItap/compare/v0.1.0a3...HEAD
+[0.1.0a3]: https://github.com/Vikingboat666/AItap/releases/tag/v0.1.0a3
 [0.1.0a2]: https://github.com/Vikingboat666/AItap/releases/tag/v0.1.0a2
 [0.1.0a1]: https://github.com/Vikingboat666/AItap/releases/tag/v0.1.0a1

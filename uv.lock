@@ -4,7 +4,7 @@ requires-python = ">=3.10"
 
 [[package]]
 name = "aitap"
-version = "0.1.0a2"
+version = "0.1.0a3"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
