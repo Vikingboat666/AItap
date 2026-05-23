@@ -54,9 +54,50 @@ import {
 } from "../components/ResultsTable";
 import { AutoIterateModal } from "../components/AutoIterateModal";
 import { IterationProgress } from "../components/IterationProgress";
+import { DagView } from "./components/DagView";
 import { clsx } from "../lib/clsx";
 
 type Mode = "node" | "segment" | "end-to-end";
+
+/** Map the UI's hyphenated mode to the wire enum (underscore). */
+function toWireMode(m: Mode): "node" | "segment" | "end_to_end" {
+  return m === "end-to-end" ? "end_to_end" : m;
+}
+
+/**
+ * True when `selected` forms at most one connected component over the
+ * pipeline `edges` (treated as undirected). Empty / single-node
+ * selections are trivially contiguous. Drives a *non-blocking* warning
+ * only — the backend runs a disconnected selection fine, each fragment
+ * independently — so this never gates the Run button.
+ */
+function isContiguousSelection(
+  selected: string[],
+  edges: ReadonlyArray<{ source: string; target: string }>,
+): boolean {
+  if (selected.length <= 1) return true;
+  const sel = new Set(selected);
+  const adj = new Map<string, string[]>();
+  for (const id of selected) adj.set(id, []);
+  for (const e of edges) {
+    if (sel.has(e.source) && sel.has(e.target)) {
+      adj.get(e.source)!.push(e.target);
+      adj.get(e.target)!.push(e.source);
+    }
+  }
+  const seen = new Set<string>([selected[0]]);
+  const queue = [selected[0]];
+  while (queue.length > 0) {
+    const cur = queue.shift()!;
+    for (const nb of adj.get(cur) ?? []) {
+      if (!seen.has(nb)) {
+        seen.add(nb);
+        queue.push(nb);
+      }
+    }
+  }
+  return seen.size === sel.size;
+}
 
 interface TargetSelection {
   kind: "prompt" | "pipeline";
@@ -91,6 +132,11 @@ export function Playground() {
       : null,
   );
   const [mode, setMode] = useState<Mode>("node");
+  // Pipeline node selection for node/segment modes. The parent owns this
+  // (DagView is controlled). Cleared on every mode switch so we never
+  // emit conflicting selectors (node_id + segment) — the backend 422s on
+  // those by design.
+  const [pipelineSelection, setPipelineSelection] = useState<string[]>([]);
   const [cases, setCases] = useState<CaseDraft[]>(DEFAULT_DRAFTS);
   const [model, setModel] = useState<string>("");
   const [temperature, setTemperature] = useState<number>(0.2);
@@ -123,6 +169,43 @@ export function Playground() {
       }),
     enabled: selectedTarget?.kind === "prompt" && !!selectedTarget?.id,
   });
+
+  // Pipeline detail (nodes + edges) for the node/segment picker. Only
+  // fetched when a pipeline is the selected target.
+  const pipelineDetailQ = useQuery({
+    queryKey: ["pipeline", selectedTarget?.id ?? ""],
+    queryFn: () =>
+      PipelinesService.getPipelineApiPipelinesPipelineIdGet({
+        pipelineId: selectedTarget?.id ?? "",
+      }),
+    enabled: selectedTarget?.kind === "pipeline" && !!selectedTarget?.id,
+  });
+
+  // Switching run mode clears any node selection so a stale node_id can't
+  // ride along with a segment request (or vice versa) and trip the
+  // backend's conflicting-selector 422.
+  const handleModeChange = useCallback((next: Mode) => {
+    setMode(next);
+    setPipelineSelection([]);
+  }, []);
+
+  const handleNodeClick = useCallback(
+    (promptId: string) => {
+      if (mode === "node") {
+        // Single-select: click to pick, click again to clear.
+        setPipelineSelection((prev) => (prev[0] === promptId ? [] : [promptId]));
+      } else if (mode === "segment") {
+        // Multi-select toggle.
+        setPipelineSelection((prev) =>
+          prev.includes(promptId)
+            ? prev.filter((id) => id !== promptId)
+            : [...prev, promptId],
+        );
+      }
+      // end-to-end: clicks are no-ops (no selection needed).
+    },
+    [mode],
+  );
 
   const placeholderVariables = useMemo<string[] | undefined>(() => {
     if (selectedTarget?.kind !== "prompt" || !promptDetailQ.data) {
@@ -173,6 +256,12 @@ export function Playground() {
       const effectiveModel =
         model || settingsQ.data?.model || "gpt-4o-mini";
       const provider = settingsQ.data?.provider ?? "openai";
+      // Pipeline runs carry an explicit mode + exactly one matching
+      // selector. Prompt runs carry none (the backend only validates
+      // pipeline targets). We send only the selector for the active mode
+      // so we never trip the conflicting-selector 422.
+      const isPipeline = selectedTarget.kind === "pipeline";
+      const wireMode = isPipeline ? toWireMode(mode) : null;
       const created = await RunsService.createRunApiRunsPost({
         requestBody: {
           target_kind: selectedTarget.kind,
@@ -185,10 +274,11 @@ export function Playground() {
             temperature,
           },
           cases: parsedCases,
+          pipeline_mode: wireMode,
+          pipeline_node_id:
+            wireMode === "node" ? (pipelineSelection[0] ?? null) : null,
           pipeline_segment:
-            selectedTarget.kind === "pipeline" && mode === "segment"
-              ? []
-              : null,
+            wireMode === "segment" ? pipelineSelection : null,
         },
       });
       return RunsService.getRunApiRunsRunIdGet({ runId: created.run_id });
@@ -258,10 +348,35 @@ export function Playground() {
     [activeRun, feedbackMutation],
   );
 
+  const isPipelineTarget = selectedTarget?.kind === "pipeline";
+
+  // Node mode needs exactly one node; segment mode needs at least one
+  // (an empty segment is the zero-node footgun the backend 422s). e2e
+  // and prompt targets need no selection.
+  const pipelineSelectionReady =
+    !isPipelineTarget ||
+    mode === "end-to-end" ||
+    (mode === "node" && pipelineSelection.length === 1) ||
+    (mode === "segment" && pipelineSelection.length >= 1);
+
+  // Non-blocking advisory: a segment whose nodes span >1 connected
+  // component still runs (each fragment independently), but we warn so
+  // the user knows the dataflow won't bridge the gap.
+  const segmentNotContiguous =
+    isPipelineTarget &&
+    mode === "segment" &&
+    pipelineSelection.length > 1 &&
+    pipelineDetailQ.data != null &&
+    !isContiguousSelection(
+      pipelineSelection,
+      pipelineDetailQ.data.pipeline.edges,
+    );
+
   const canRun =
     !!selectedTarget &&
     !caseHasErrors &&
     parsedCases.length > 0 &&
+    pipelineSelectionReady &&
     !runMutation.isPending;
 
   return (
@@ -276,7 +391,7 @@ export function Playground() {
           promptsLoading={promptsQ.isLoading}
           pipelinesLoading={pipelinesQ.isLoading}
           mode={mode}
-          onModeChange={setMode}
+          onModeChange={handleModeChange}
         />
 
         <ModelControls
@@ -347,6 +462,61 @@ export function Playground() {
       </div>
 
       <div className="space-y-4 xl:col-span-2">
+        {isPipelineTarget && (mode === "node" || mode === "segment") && (
+          <Card>
+            <CardHeader
+              title={mode === "node" ? "pick a node" : "pick a segment"}
+              subtitle={
+                mode === "node"
+                  ? "click one node to run it in isolation"
+                  : "click nodes to include; outputs flow along edges within the set"
+              }
+            />
+            <div className="px-3 py-3">
+              {pipelineDetailQ.isLoading ? (
+                <div className="text-xs text-ink-500">loading pipeline…</div>
+              ) : pipelineDetailQ.data ? (
+                <>
+                  <div className="mb-2 flex items-center gap-2 text-[11px]">
+                    {pipelineSelection.length === 0 ? (
+                      <Badge tone="warn">
+                        {mode === "node"
+                          ? "select a node"
+                          : "select at least one node"}
+                      </Badge>
+                    ) : (
+                      <Badge tone="brand">
+                        {mode === "node"
+                          ? `node: ${pipelineSelection[0]}`
+                          : `segment: ${pipelineSelection.length} node${
+                              pipelineSelection.length === 1 ? "" : "s"
+                            }`}
+                      </Badge>
+                    )}
+                  </div>
+                  <DagView
+                    pipeline={pipelineDetailQ.data.pipeline}
+                    siteIndex={pipelineDetailQ.data.site_index}
+                    selectedNodeIds={pipelineSelection}
+                    onNodeClick={handleNodeClick}
+                  />
+                  {segmentNotContiguous && (
+                    <div
+                      role="alert"
+                      className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-700"
+                    >
+                      these nodes aren&apos;t connected — they&apos;ll run as
+                      independent groups
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="text-xs text-ink-500">no pipeline data</div>
+              )}
+            </div>
+          </Card>
+        )}
+
         <CaseEditor
           cases={cases}
           onChange={setCases}
@@ -468,18 +638,14 @@ function TargetCard({
               run mode
             </div>
             {/*
-              Segment mode is deliberately omitted from the selector
-              until the node-pick UI lands (M5). The runMutation logic
-              below still understands `mode === "segment"` and sends
-              `pipeline_segment: []`, but exposing that option here
-              would let users dispatch a zero-node segment run (the
-              backend treats `[]` as "run no nodes" — succeeds with
-              empty output, which looks like a silent bug). Re-add
-              `"segment"` to the array once the UI can supply concrete
-              node IDs.
+              All three modes are exposed now that the node-pick UI
+              (segment/node selection on the DAG) has landed. The picker
+              gates an empty segment behind a disabled Run button, so the
+              old "zero-node segment silently succeeds" footgun can't
+              occur from the UI; the backend also 422s an empty segment.
             */}
             <div className="flex gap-1">
-              {(["node", "end-to-end"] as const).map((m) => (
+              {(["node", "segment", "end-to-end"] as const).map((m) => (
                 <button
                   key={m}
                   type="button"
