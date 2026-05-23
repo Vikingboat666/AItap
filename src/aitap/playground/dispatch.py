@@ -226,15 +226,25 @@ def _dispatch(
     if payload.target_kind == "pipeline":
         pipeline = _load_pipeline(conn, payload.target_id)
         site_index = _load_site_index_for_pipeline(conn, pipeline)
+        # Honour the requested run mode (A·D4). ``None`` maps to
+        # ``end_to_end`` so clients that never send a mode keep their
+        # historical whole-DAG behaviour byte-for-byte. The route layer
+        # (routes/runs.py) has already validated field/mode consistency
+        # and 422'd inconsistent requests, so we forward the selectors as
+        # given; the runner re-checks them and raises ValueError on any
+        # residual inconsistency (which invoke_run turns into a failed run).
+        mode = payload.pipeline_mode or "end_to_end"
         pipeline_result: PipelineRunResult = asyncio.run(
             run_pipeline(
                 pipeline,
-                "end_to_end",
+                mode,
                 dataset_cases=cases,
                 site_index=site_index,
                 client=client,
                 parameters=payload.parameters,
                 version=payload.target_version,
+                node_id=payload.pipeline_node_id,
+                segment=payload.pipeline_segment,
             )
         )
         # Pipeline mode does not surface per-case ChatResponses through
