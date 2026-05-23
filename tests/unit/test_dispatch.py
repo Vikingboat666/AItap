@@ -342,6 +342,252 @@ def test_invoke_run_pipeline_end_to_end(
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Pipeline mode routing (A·D4: dispatch honours pipeline_mode)
+# ---------------------------------------------------------------------------
+
+
+def _seed_three_node_pipeline(project: Settings) -> Pipeline:
+    """A → B → C linear pipeline with all three node sites seeded.
+
+    Linear so segment/end_to_end topological order is deterministic and we
+    can assert call counts against a known node set.
+    """
+    a = _prompt_site("p-a")
+    b = _prompt_site("p-b")
+    c = _prompt_site("p-c")
+    for site in (a, b, c):
+        _seed_prompt_row(project, site)
+    pipeline = Pipeline(
+        id="pipe-3",
+        name="three_step",
+        nodes=[
+            PipelineNode(prompt_id=a.id),
+            PipelineNode(prompt_id=b.id),
+            PipelineNode(prompt_id=c.id),
+        ],
+        edges=[
+            PipelineEdge(source=a.id, target=b.id, kind=_EdgeKind.VARIABLE, via="value"),
+            PipelineEdge(source=b.id, target=c.id, kind=_EdgeKind.VARIABLE, via="value"),
+        ],
+        entry_points=[a.id],
+        exit_points=[c.id],
+    )
+    _seed_pipeline_row(project, pipeline)
+    return pipeline
+
+
+def _seed_pipeline_run_row(project: Settings, run_id: str, pipeline_id: str) -> None:
+    conn = _open_conn(project)
+    try:
+        runs_dao.insert_run(
+            conn,
+            run_id=run_id,
+            target_kind="pipeline",
+            target_id=pipeline_id,
+            target_version=1,
+            provider="anthropic",
+            model="mock-model",
+            parameters_json="{}",
+        )
+    finally:
+        conn.close()
+
+
+def _pipeline_payload(
+    pipeline_id: str,
+    *,
+    mode: str | None = None,
+    node_id: str | None = None,
+    segment: list[str] | None = None,
+) -> RunCreate:
+    return RunCreate(
+        target_kind="pipeline",
+        target_id=pipeline_id,
+        target_version=1,
+        cases=[DatasetCase(inputs={"value": "seed"})],
+        provider=Provider.ANTHROPIC,
+        model="mock-model",
+        parameters=CallParameters(temperature=0.0),
+        pipeline_mode=mode,  # type: ignore[arg-type]
+        pipeline_node_id=node_id,
+        pipeline_segment=segment,
+    )
+
+
+def test_dispatch_node_mode_routes_to_runner(
+    project: Settings,
+    mock_client_factory: MockLLMClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``pipeline_mode='node'`` forwards mode + node_id to ``run_pipeline``."""
+    pipeline = _seed_three_node_pipeline(project)
+    run_id = "run-node-spy"
+    _seed_pipeline_run_row(project, run_id, pipeline.id)
+
+    captured: dict[str, object] = {}
+    real_run_pipeline = dispatch.run_pipeline
+
+    async def _spy(pipeline_arg, mode, **kwargs):  # type: ignore[no-untyped-def]
+        captured["mode"] = mode
+        captured["node_id"] = kwargs.get("node_id")
+        captured["segment"] = kwargs.get("segment")
+        return await real_run_pipeline(pipeline_arg, mode, **kwargs)
+
+    monkeypatch.setattr(dispatch, "run_pipeline", _spy)
+
+    payload = _pipeline_payload(pipeline.id, mode="node", node_id="p-b")
+    dispatch.invoke_run(settings=project, run_id=run_id, payload=payload)
+
+    assert captured["mode"] == "node"
+    assert captured["node_id"] == "p-b"
+    assert captured["segment"] is None
+    # node mode runs exactly one node for the single case.
+    assert len(mock_client_factory.calls) == 1
+
+
+def test_dispatch_segment_mode_routes_to_runner(
+    project: Settings,
+    mock_client_factory: MockLLMClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``pipeline_mode='segment'`` forwards mode + segment to ``run_pipeline``."""
+    pipeline = _seed_three_node_pipeline(project)
+    run_id = "run-seg-spy"
+    _seed_pipeline_run_row(project, run_id, pipeline.id)
+
+    captured: dict[str, object] = {}
+    real_run_pipeline = dispatch.run_pipeline
+
+    async def _spy(pipeline_arg, mode, **kwargs):  # type: ignore[no-untyped-def]
+        captured["mode"] = mode
+        captured["node_id"] = kwargs.get("node_id")
+        captured["segment"] = kwargs.get("segment")
+        return await real_run_pipeline(pipeline_arg, mode, **kwargs)
+
+    monkeypatch.setattr(dispatch, "run_pipeline", _spy)
+
+    payload = _pipeline_payload(pipeline.id, mode="segment", segment=["p-a", "p-b"])
+    dispatch.invoke_run(settings=project, run_id=run_id, payload=payload)
+
+    assert captured["mode"] == "segment"
+    assert captured["segment"] == ["p-a", "p-b"]
+    assert captured["node_id"] is None
+    # segment {a, b} runs two nodes for the single case (c is excluded).
+    assert len(mock_client_factory.calls) == 2
+
+
+def test_dispatch_end_to_end_mode_routes_to_runner(
+    project: Settings,
+    mock_client_factory: MockLLMClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Explicit ``pipeline_mode='end_to_end'`` walks the whole DAG."""
+    pipeline = _seed_three_node_pipeline(project)
+    run_id = "run-e2e-spy"
+    _seed_pipeline_run_row(project, run_id, pipeline.id)
+
+    captured: dict[str, object] = {}
+    real_run_pipeline = dispatch.run_pipeline
+
+    async def _spy(pipeline_arg, mode, **kwargs):  # type: ignore[no-untyped-def]
+        captured["mode"] = mode
+        return await real_run_pipeline(pipeline_arg, mode, **kwargs)
+
+    monkeypatch.setattr(dispatch, "run_pipeline", _spy)
+
+    payload = _pipeline_payload(pipeline.id, mode="end_to_end")
+    dispatch.invoke_run(settings=project, run_id=run_id, payload=payload)
+
+    assert captured["mode"] == "end_to_end"
+    # All three nodes run for the single case.
+    assert len(mock_client_factory.calls) == 3
+
+
+def test_dispatch_mode_none_is_end_to_end_regression(
+    project: Settings,
+    mock_client_factory: MockLLMClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No ``pipeline_mode`` field behaves exactly like before (end_to_end).
+
+    Regression guard for the additive contract change: an old client that
+    never sends a mode must still walk the whole DAG.
+    """
+    pipeline = _seed_three_node_pipeline(project)
+    run_id = "run-none-spy"
+    _seed_pipeline_run_row(project, run_id, pipeline.id)
+
+    captured: dict[str, object] = {}
+    real_run_pipeline = dispatch.run_pipeline
+
+    async def _spy(pipeline_arg, mode, **kwargs):  # type: ignore[no-untyped-def]
+        captured["mode"] = mode
+        captured["node_id"] = kwargs.get("node_id")
+        captured["segment"] = kwargs.get("segment")
+        return await real_run_pipeline(pipeline_arg, mode, **kwargs)
+
+    monkeypatch.setattr(dispatch, "run_pipeline", _spy)
+
+    payload = _pipeline_payload(pipeline.id)  # no mode/node_id/segment
+    dispatch.invoke_run(settings=project, run_id=run_id, payload=payload)
+
+    assert captured["mode"] == "end_to_end"
+    assert captured["node_id"] is None
+    assert captured["segment"] is None
+    # All three nodes run — identical to the pre-change behaviour.
+    assert len(mock_client_factory.calls) == 3
+
+
+def test_dispatch_segment_mode_produces_intermediate(
+    project: Settings,
+    mock_client_factory: MockLLMClient,
+) -> None:
+    """A real segment run records per-node intermediates in the sidecar."""
+    pipeline = _seed_three_node_pipeline(project)
+    run_id = "run-seg-real"
+    _seed_pipeline_run_row(project, run_id, pipeline.id)
+
+    payload = _pipeline_payload(pipeline.id, mode="segment", segment=["p-a", "p-b"])
+    dispatch.invoke_run(settings=project, run_id=run_id, payload=payload)
+
+    sidecar = dispatch.outputs_sidecar_path(project, run_id)
+    records = [
+        json.loads(line) for line in sidecar.read_text(encoding="utf-8").splitlines() if line
+    ]
+    assert len(records) == 1
+    intermediate = records[0]["intermediate"]
+    # Only the two segment nodes appear; c is out of scope.
+    assert set(intermediate) == {"p-a", "p-b"}
+
+
+def test_dispatch_node_mode_runs_only_one_node(
+    project: Settings,
+    mock_client_factory: MockLLMClient,
+) -> None:
+    """Node mode runs a single node and emits no intermediate map.
+
+    This also exercises the latent ``node`` no-op bug fix: before A·D4 the
+    dispatch always ran end_to_end regardless of the requested node.
+    """
+    pipeline = _seed_three_node_pipeline(project)
+    run_id = "run-node-real"
+    _seed_pipeline_run_row(project, run_id, pipeline.id)
+
+    payload = _pipeline_payload(pipeline.id, mode="node", node_id="p-c")
+    dispatch.invoke_run(settings=project, run_id=run_id, payload=payload)
+
+    # Exactly one chat call for the single targeted node + single case.
+    assert len(mock_client_factory.calls) == 1
+    sidecar = dispatch.outputs_sidecar_path(project, run_id)
+    records = [
+        json.loads(line) for line in sidecar.read_text(encoding="utf-8").splitlines() if line
+    ]
+    assert len(records) == 1
+    # Node mode delegates to run_prompt, which produces no intermediate map.
+    assert records[0]["intermediate"] is None
+
+
 def test_invoke_run_unknown_prompt_marks_failed(project: Settings) -> None:
     """A missing target prompt flips the run to ``failed`` and re-raises."""
     run_id = "test-run-missing"

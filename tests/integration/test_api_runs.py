@@ -39,7 +39,11 @@ from aitap.playground import dispatch as playground_dispatch
 from aitap.scanner.models import (
     CodeLocation,
     Confidence,
+    EdgeKind,
     Message,
+    Pipeline,
+    PipelineEdge,
+    PipelineNode,
     PromptSite,
     Provider,
     Role,
@@ -186,6 +190,60 @@ def _seed_prompt(settings: Settings, prompt_id: str = "prompt-abc") -> None:
         conn.close()
 
 
+def _seed_two_node_pipeline(settings: Settings, pipeline_id: str = "pipe-api") -> Pipeline:
+    """Seed two prompt sites + a two-node A→B pipeline row.
+
+    The pipeline-mode validation tests need a real pipeline in the store so
+    a *valid* request 202s end-to-end (the dispatch adapter resolves the
+    target). The 422 path short-circuits in the route before dispatch, but
+    seeding keeps every test consistent.
+    """
+    _seed_prompt(settings, "node-a")
+    _seed_prompt(settings, "node-b")
+    pipeline = Pipeline(
+        id=pipeline_id,
+        name="api_two_step",
+        nodes=[PipelineNode(prompt_id="node-a"), PipelineNode(prompt_id="node-b")],
+        edges=[PipelineEdge(source="node-a", target="node-b", kind=EdgeKind.VARIABLE, via="value")],
+        entry_points=["node-a"],
+        exit_points=["node-b"],
+    )
+    conn = _open_conn(settings)
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO pipelines (id, name, payload_json) VALUES (?, ?, ?)",
+            (pipeline.id, pipeline.name, pipeline.model_dump_json()),
+        )
+    finally:
+        conn.close()
+    return pipeline
+
+
+def _pipeline_run_payload(
+    pipeline_id: str = "pipe-api",
+    *,
+    mode: str | None = None,
+    node_id: str | None = None,
+    segment: list[str] | None = None,
+) -> dict[str, object]:
+    body: dict[str, object] = {
+        "target_kind": "pipeline",
+        "target_id": pipeline_id,
+        "target_version": 1,
+        "cases": [],
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-6",
+        "parameters": {"temperature": 0.0},
+    }
+    if mode is not None:
+        body["pipeline_mode"] = mode
+    if node_id is not None:
+        body["pipeline_node_id"] = node_id
+    if segment is not None:
+        body["pipeline_segment"] = segment
+    return body
+
+
 # ---------------------------------------------------------------------------
 # Runs
 # ---------------------------------------------------------------------------
@@ -311,6 +369,173 @@ async def test_get_run_returns_per_case_outputs_from_sidecar(
         # Reinstate the autouse fixture's default so other tests in the
         # session aren't affected.
         playground_dispatch.set_client_factory(lambda provider, model: MockLLMClient(model=model))
+
+
+# ---------------------------------------------------------------------------
+# Pipeline run-mode validation (A·D1 / A·D3)
+# ---------------------------------------------------------------------------
+
+
+async def test_pipeline_node_mode_missing_node_id_422(
+    client: AsyncClient,
+    settings: Settings,
+) -> None:
+    """mode='node' without pipeline_node_id is rejected before dispatch."""
+    _seed_two_node_pipeline(settings)
+    resp = await client.post(
+        "/api/runs",
+        json=_pipeline_run_payload(mode="node"),
+    )
+    assert resp.status_code == 422, resp.text
+    assert "pipeline_node_id" in resp.json()["detail"]
+
+
+async def test_pipeline_node_mode_blank_node_id_422(
+    client: AsyncClient,
+    settings: Settings,
+) -> None:
+    """mode='node' with a blank pipeline_node_id 422s like a missing one.
+
+    A blank string would otherwise slip past the route check and only fail
+    deep in the runner as a 500 ("node not found"); we treat ``""`` as
+    missing, symmetric with the empty-segment guard.
+    """
+    _seed_two_node_pipeline(settings)
+    resp = await client.post(
+        "/api/runs",
+        json=_pipeline_run_payload(mode="node", node_id=""),
+    )
+    assert resp.status_code == 422, resp.text
+    assert "pipeline_node_id" in resp.json()["detail"]
+
+
+async def test_pipeline_segment_mode_none_segment_422(
+    client: AsyncClient,
+    settings: Settings,
+) -> None:
+    """mode='segment' without a segment list is rejected (no implicit e2e)."""
+    _seed_two_node_pipeline(settings)
+    resp = await client.post(
+        "/api/runs",
+        json=_pipeline_run_payload(mode="segment"),
+    )
+    assert resp.status_code == 422, resp.text
+    assert "pipeline_segment" in resp.json()["detail"]
+
+
+async def test_pipeline_segment_mode_empty_segment_422(
+    client: AsyncClient,
+    settings: Settings,
+) -> None:
+    """mode='segment' with an empty list 422s — the zero-node footgun (A·D3)."""
+    _seed_two_node_pipeline(settings)
+    resp = await client.post(
+        "/api/runs",
+        json=_pipeline_run_payload(mode="segment", segment=[]),
+    )
+    assert resp.status_code == 422, resp.text
+    assert "pipeline_segment" in resp.json()["detail"]
+
+
+async def test_pipeline_node_mode_with_segment_conflict_422(
+    client: AsyncClient,
+    settings: Settings,
+) -> None:
+    """mode='node' must not also carry pipeline_segment (ambiguous request)."""
+    _seed_two_node_pipeline(settings)
+    resp = await client.post(
+        "/api/runs",
+        json=_pipeline_run_payload(mode="node", node_id="node-a", segment=["node-a"]),
+    )
+    assert resp.status_code == 422, resp.text
+    assert "pipeline_segment" in resp.json()["detail"]
+
+
+async def test_pipeline_segment_mode_with_node_id_conflict_422(
+    client: AsyncClient,
+    settings: Settings,
+) -> None:
+    """mode='segment' must not also carry pipeline_node_id (ambiguous request)."""
+    _seed_two_node_pipeline(settings)
+    resp = await client.post(
+        "/api/runs",
+        json=_pipeline_run_payload(mode="segment", segment=["node-a"], node_id="node-b"),
+    )
+    assert resp.status_code == 422, resp.text
+    assert "pipeline_node_id" in resp.json()["detail"]
+
+
+async def test_pipeline_node_mode_valid_202(
+    client: AsyncClient,
+    settings: Settings,
+) -> None:
+    """A consistent node-mode request is accepted (202) and runs."""
+    _seed_two_node_pipeline(settings)
+    resp = await client.post(
+        "/api/runs",
+        json=_pipeline_run_payload(mode="node", node_id="node-a"),
+    )
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["status"] == "done"
+
+
+async def test_pipeline_segment_mode_valid_202(
+    client: AsyncClient,
+    settings: Settings,
+) -> None:
+    """A consistent segment-mode request is accepted (202) and runs."""
+    _seed_two_node_pipeline(settings)
+    resp = await client.post(
+        "/api/runs",
+        json=_pipeline_run_payload(mode="segment", segment=["node-a", "node-b"]),
+    )
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["status"] == "done"
+
+
+async def test_pipeline_mode_none_still_runs_end_to_end_202(
+    client: AsyncClient,
+    settings: Settings,
+) -> None:
+    """No pipeline_mode behaves like end_to_end and is accepted (regression)."""
+    _seed_two_node_pipeline(settings)
+    resp = await client.post(
+        "/api/runs",
+        json=_pipeline_run_payload(),
+    )
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["status"] == "done"
+
+
+async def test_pipeline_end_to_end_ignores_selectors_202(
+    client: AsyncClient,
+    settings: Settings,
+) -> None:
+    """end_to_end ignores any stray node_id/segment and is accepted.
+
+    A·D1: ``None``/``end_to_end`` preserve today's behaviour; selectors are
+    not consistency-checked in these modes (the UI simply won't send them,
+    but a lenient backend keeps the additive change non-breaking).
+    """
+    _seed_two_node_pipeline(settings)
+    resp = await client.post(
+        "/api/runs",
+        json=_pipeline_run_payload(mode="end_to_end", node_id="node-a", segment=["node-a"]),
+    )
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["status"] == "done"
+
+
+async def test_prompt_run_ignores_pipeline_mode_fields(
+    client: AsyncClient,
+) -> None:
+    """Pipeline-mode validation never touches prompt runs."""
+    payload = _run_payload()
+    # A prompt payload that nonsensically carries a node mode but no node id
+    # must NOT 422 — the validation is scoped to target_kind == 'pipeline'.
+    payload["pipeline_mode"] = "node"
+    resp = await client.post("/api/runs", json=payload)
+    assert resp.status_code == 202, resp.text
 
 
 # ---------------------------------------------------------------------------

@@ -68,7 +68,14 @@ def create_run(
       import. The adapter is responsible for marking the run *done* /
       *failed* and stamping the final cost. If the module is unavailable
       we leave the row in *running* so a later worktree merge can attach.
+
+    Wave 5 addition (A·D1/A·D3): pipeline runs carry an explicit
+    ``pipeline_mode`` plus mode-specific selectors. We validate their
+    consistency here — *before* writing the runs row — so a malformed
+    request 422s cleanly without leaving an orphan ``running`` row behind.
     """
+    _validate_pipeline_mode(payload)
+
     run_id = runs_dao.new_run_id(payload.target_id, payload.target_version)
     parameters_json = runs_dao.serialize_parameters(payload.parameters)
 
@@ -206,6 +213,83 @@ def post_iterate(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _validate_pipeline_mode(payload: RunCreate) -> None:
+    """Enforce ``pipeline_mode`` / selector consistency for pipeline runs.
+
+    Mapping (see wave-5-design.md A·D1 / A·D3):
+
+    - ``target_kind != "pipeline"``: prompt runs never carry pipeline
+      selectors, so we no-op. A stray ``pipeline_mode`` on a prompt payload
+      is ignored, not an error — the field is simply out of scope there.
+    - ``pipeline_mode in (None, "end_to_end")``: today's behaviour. We do
+      **not** consistency-check ``pipeline_node_id`` / ``pipeline_segment``
+      here; the runner ignores them and a lenient backend keeps the
+      additive contract change non-breaking for clients that send stray
+      defaults.
+    - ``pipeline_mode == "node"``: requires a **non-empty**
+      ``pipeline_node_id`` (a blank string is treated as missing); must not
+      also carry ``pipeline_segment`` (ambiguous — which one wins?).
+    - ``pipeline_mode == "segment"``: requires a **non-empty**
+      ``pipeline_segment`` (an empty list is the "zero-node segment
+      silently succeeds" footgun A·D3 explicitly blocks); must not also
+      carry ``pipeline_node_id``.
+
+    Design note on the conflict rules: rather than silently pick a winner
+    when both a node id and a segment are present, we reject the request.
+    An ambiguous selector almost always signals a client bug (e.g. stale
+    UI state not cleared on a mode switch); a 422 surfaces it immediately
+    instead of running something the caller didn't intend. The two
+    permissive modes (``None``/``end_to_end``) stay lenient on purpose so
+    the additive change can't break an existing client.
+
+    Raises:
+        HTTPException: 422 with a human-readable ``detail`` naming the
+            offending field on any inconsistency.
+    """
+    if payload.target_kind != "pipeline":
+        return
+
+    mode = payload.pipeline_mode
+    if mode is None or mode == "end_to_end":
+        return
+
+    if mode == "node":
+        if not payload.pipeline_node_id:
+            # ``not`` (rather than ``is None``) so a blank ``""`` is treated
+            # as missing too — symmetric with the segment branch's empty-list
+            # check below. Otherwise an empty string slips past here and only
+            # fails deep in the runner as a 500 ("node not found") instead of
+            # a clean 422.
+            _raise_422("pipeline_mode='node' requires a non-empty pipeline_node_id")
+        if payload.pipeline_segment is not None:
+            _raise_422(
+                "pipeline_mode='node' must not carry pipeline_segment; send only pipeline_node_id"
+            )
+        return
+
+    if mode == "segment":
+        if not payload.pipeline_segment:
+            _raise_422("pipeline_mode='segment' requires a non-empty pipeline_segment")
+        if payload.pipeline_node_id is not None:
+            _raise_422(
+                "pipeline_mode='segment' must not carry pipeline_node_id; "
+                "send only pipeline_segment"
+            )
+        return
+
+
+def _raise_422(detail: str) -> None:
+    """Raise an HTTP 422 with *detail* (factored out for a single call site shape).
+
+    The status code is the literal ``422`` rather than
+    ``status.HTTP_422_UNPROCESSABLE_ENTITY``: newer Starlette deprecated that
+    constant in favour of ``HTTP_422_UNPROCESSABLE_CONTENT``, and the two
+    spellings drift across the versions pinned in different worktrees. The
+    integer is unambiguous, stable, and warning-free.
+    """
+    raise HTTPException(status_code=422, detail=detail)
 
 
 def _invoke_runner_safely(

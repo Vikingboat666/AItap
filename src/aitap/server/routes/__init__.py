@@ -137,7 +137,25 @@ class RunCreate(_ApiModel):
     provider: Provider
     model: str
     parameters: CallParameters
-    pipeline_segment: list[str] | None = None  # subset of node ids to run, for "片段级"
+
+    # ---- Pipeline run-mode selectors (ignored when target_kind == "prompt") ----
+    #
+    # ``pipeline_mode`` makes the run mode explicit on the wire instead of
+    # inferring it from ``pipeline_segment`` (see wave-5-design.md A·D1).
+    # The three modes map 1:1 to ``pipeline_runner.run_pipeline``'s modes:
+    #
+    #   - "node"        run a single node in isolation; needs pipeline_node_id.
+    #   - "segment"     run a contiguous slice; needs a non-empty pipeline_segment.
+    #   - "end_to_end"  walk the whole DAG (the historical default).
+    #
+    # ``None`` is the backward-compatible default: it behaves byte-for-byte
+    # like "end_to_end" so existing clients that never send a mode keep their
+    # current behaviour. The route layer (routes/runs.py) enforces the
+    # field/mode consistency rules and 422s on violations; dispatch.py maps
+    # these fields onto the runner.
+    pipeline_mode: Literal["node", "segment", "end_to_end"] | None = None
+    pipeline_node_id: str | None = None  # required when pipeline_mode == "node"
+    pipeline_segment: list[str] | None = None  # required (non-empty) when mode == "segment"
 
 
 class RunOutput(_ApiModel):
