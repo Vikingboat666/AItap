@@ -43,13 +43,18 @@ export function Badge({
   tone = "neutral",
 }: {
   children: ReactNode;
-  tone?: "neutral" | "brand" | "warn" | "ok";
+  tone?: "neutral" | "brand" | "warn" | "ok" | "err";
 }) {
+  // `err` is the rose palette — kept in lockstep with the FailureBanner
+  // (rose-50 bg / rose-200 border / rose-700 text). Use it for terminal
+  // failure surfaces so a small inline badge reads the same severity as
+  // the larger `role="alert"` banner it sits next to.
   const palette: Record<string, string> = {
     neutral: "bg-ink-100 text-ink-700",
     brand: "bg-brand-50 text-brand-700",
     warn: "bg-amber-50 text-amber-700",
     ok: "bg-emerald-50 text-emerald-700",
+    err: "bg-rose-50 text-rose-700",
   };
   return (
     <span

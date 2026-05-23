@@ -37,6 +37,7 @@ import {
 import type {
   FeedbackCreate,
   FeedbackResponse,
+  IterateSessionResponse,
   PromptDetailResponse,
   RunDetailResponse,
 } from "../api/generated";
@@ -51,6 +52,8 @@ import {
   ResultsTable,
   type FeedbackSubmission,
 } from "../components/ResultsTable";
+import { AutoIterateModal } from "../components/AutoIterateModal";
+import { IterationProgress } from "../components/IterationProgress";
 import { clsx } from "../lib/clsx";
 
 type Mode = "node" | "segment" | "end-to-end";
@@ -92,6 +95,14 @@ export function Playground() {
   const [model, setModel] = useState<string>("");
   const [temperature, setTemperature] = useState<number>(0.2);
   const [activeRun, setActiveRun] = useState<RunDetailResponse | null>(null);
+
+  // Auto-iterate state — modal visibility + the active session id once
+  // a POST /api/iterate succeeds. We keep `iterateSession` so the
+  // session_id survives a `<IterationProgress />` unmount/remount (e.g.
+  // the user switches tabs and comes back).
+  const [iterateModalOpen, setIterateModalOpen] = useState(false);
+  const [iterateSession, setIterateSession] =
+    useState<IterateSessionResponse | null>(null);
 
   // Seed model from settings the first time settings resolve. After
   // that the user owns the field.
@@ -290,6 +301,35 @@ export function Playground() {
           {runMutation.isPending ? "running…" : "run"}
         </button>
 
+        {/*
+          Auto-iterate button — disabled while a single-shot run is in
+          flight (so the user can't dispatch a session against a moving
+          target) and when no prompt is selected. The modal carries the
+          mode/instruction/manual-text inputs and gates the POST itself.
+        */}
+        <button
+          type="button"
+          disabled={
+            !selectedTarget ||
+            selectedTarget.kind !== "prompt" ||
+            runMutation.isPending
+          }
+          onClick={() => setIterateModalOpen(true)}
+          className={clsx(
+            "w-full rounded-md px-3 py-2 text-sm font-medium",
+            selectedTarget?.kind === "prompt" && !runMutation.isPending
+              ? "border border-brand-300 bg-white text-brand-700 hover:bg-brand-50"
+              : "cursor-not-allowed border border-ink-200 bg-ink-50 text-ink-400",
+          )}
+          title={
+            selectedTarget?.kind === "prompt"
+              ? "open the auto-iterate launch modal"
+              : "select a prompt target to enable auto-iterate"
+          }
+        >
+          auto-iterate
+        </button>
+
         {runMutation.error && (
           <Card className="border-rose-200 bg-rose-50/40">
             <div className="space-y-2 px-4 py-3 text-xs text-rose-700">
@@ -333,6 +373,13 @@ export function Playground() {
           />
         )}
 
+        {iterateSession && (
+          <IterationProgress
+            sessionId={iterateSession.session_id}
+            maxRounds={5}
+          />
+        )}
+
         {feedbackMutation.data && (
           <FeedbackToast
             response={feedbackMutation.data.res}
@@ -340,6 +387,25 @@ export function Playground() {
           />
         )}
       </div>
+
+      {iterateModalOpen && selectedTarget?.kind === "prompt" && (
+        <AutoIterateModal
+          promptId={selectedTarget.id}
+          // No `initialDatasetId` here — datasets live under
+          // `.aitap/datasets/<name>.cases.jsonl` and have no derivable
+          // mapping from a prompt id. We previously seeded with
+          // `selectedTarget.id` to mask a missing picker UI, but the
+          // backend silently treats unknown ids as an empty case list
+          // (every round scores 0 → "converged via max_rounds" with a
+          // flat-zero chart). The modal now requires the user to type
+          // the dataset name explicitly.
+          onClose={() => setIterateModalOpen(false)}
+          onStart={(session) => {
+            setIterateSession(session);
+            setIterateModalOpen(false);
+          }}
+        />
+      )}
     </div>
   );
 }

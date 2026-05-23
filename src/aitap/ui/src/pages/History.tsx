@@ -31,7 +31,10 @@ import { useQuery } from "@tanstack/react-query";
 import { HistoryService } from "../api/generated";
 import type { HistoryEntry, HistoryResponse } from "../api/generated";
 import { Badge, Card, CardHeader, EmptyState } from "../components/primitives";
+import { IterationTimeline } from "../components/IterationTimeline";
 import { clsx } from "../lib/clsx";
+
+type HistoryTab = "versions" | "iterations";
 
 interface DiffTarget {
   current: HistoryEntry;
@@ -41,6 +44,7 @@ interface DiffTarget {
 export function History() {
   const { promptId = "" } = useParams();
   const [diffTarget, setDiffTarget] = useState<DiffTarget | null>(null);
+  const [tab, setTab] = useState<HistoryTab>("versions");
 
   const historyQ = useQuery<HistoryResponse>({
     queryKey: ["history", promptId],
@@ -98,35 +102,43 @@ export function History() {
 
   return (
     <div className="space-y-4">
-      <ScoreChart entries={historyQ.data.entries} />
+      <HistoryTabs tab={tab} onChange={setTab} />
 
-      <Card>
-        <CardHeader
-          title="version history"
-          subtitle={`prompt ${historyQ.data.prompt_id}`}
-        />
-        {entries.length === 0 ? (
-          <div className="px-4 py-6 text-xs italic text-ink-400">
-            no versions recorded yet
-          </div>
-        ) : (
-          <ol className="divide-y divide-ink-100">
-            {entries.map((entry, idx) => {
-              // entries is newest-first; the next index in the reversed
-              // list is the older sibling, which is the diff baseline.
-              const previous = entries[idx + 1] ?? null;
-              return (
-                <VersionRow
-                  key={entry.version}
-                  entry={entry}
-                  previous={previous}
-                  onDiff={() => setDiffTarget({ current: entry, previous })}
-                />
-              );
-            })}
-          </ol>
-        )}
-      </Card>
+      {tab === "versions" && (
+        <>
+          <ScoreChart entries={historyQ.data.entries} />
+
+          <Card>
+            <CardHeader
+              title="version history"
+              subtitle={`prompt ${historyQ.data.prompt_id}`}
+            />
+            {entries.length === 0 ? (
+              <div className="px-4 py-6 text-xs italic text-ink-400">
+                no versions recorded yet
+              </div>
+            ) : (
+              <ol className="divide-y divide-ink-100">
+                {entries.map((entry, idx) => {
+                  // entries is newest-first; the next index in the reversed
+                  // list is the older sibling, which is the diff baseline.
+                  const previous = entries[idx + 1] ?? null;
+                  return (
+                    <VersionRow
+                      key={entry.version}
+                      entry={entry}
+                      previous={previous}
+                      onDiff={() => setDiffTarget({ current: entry, previous })}
+                    />
+                  );
+                })}
+              </ol>
+            )}
+          </Card>
+        </>
+      )}
+
+      {tab === "iterations" && <IterationTimeline promptId={promptId} />}
 
       {diffTarget && (
         <DiffModal
@@ -135,6 +147,45 @@ export function History() {
           onClose={() => setDiffTarget(null)}
         />
       )}
+    </div>
+  );
+}
+
+function HistoryTabs({
+  tab,
+  onChange,
+}: {
+  tab: HistoryTab;
+  onChange: (next: HistoryTab) => void;
+}) {
+  // Two-tab control: "versions" (existing prompt_versions timeline) and
+  // "iterations" (Wave 4 self-iteration sessions). Implemented as plain
+  // buttons rather than a routing change so deep links continue to
+  // resolve to the historical default (versions).
+  return (
+    <div
+      role="tablist"
+      aria-label="history view"
+      className="flex gap-1 border-b border-ink-200"
+    >
+      {(["versions", "iterations"] as const).map((t) => (
+        <button
+          key={t}
+          role="tab"
+          type="button"
+          aria-selected={tab === t}
+          data-tab={t}
+          onClick={() => onChange(t)}
+          className={clsx(
+            "rounded-t-md px-3 py-1.5 text-xs",
+            tab === t
+              ? "border border-b-0 border-ink-200 bg-white font-medium text-brand-700"
+              : "text-ink-500 hover:text-ink-700",
+          )}
+        >
+          {t}
+        </button>
+      ))}
     </div>
   );
 }

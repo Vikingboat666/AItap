@@ -73,13 +73,14 @@ export class RunsService {
     }
     /**
      * Get Run
-     * Fetch one run + a placeholder outputs list.
+     * Fetch one run + per-case outputs from the JSONL sidecar.
      *
-     * Wave 3 doesn't persist per-case outputs to the DB (no ``outputs``
-     * table); we return an empty list so the response shape matches the
-     * contract. The :mod:`aitap.playground.dispatch` adapter has a TODO to
-     * write outputs as a JSONL sidecar under ``.aitap/runs/<id>/`` in M4 —
-     * once that lands :func:`_load_outputs` will read from there.
+     * Per-case outputs live in
+     * ``<runs_dir>/<run_id>/outputs.jsonl`` (written by
+     * :func:`aitap.playground.dispatch._write_outputs_sidecar`). Runs still
+     * in the ``running`` status — or runs that failed at the run level
+     * before any case completed — have no sidecar file; :func:`_load_outputs`
+     * returns an empty list in that case so the contract shape is preserved.
      * @returns RunDetailResponse Successful Response
      * @throws ApiError
      */
