@@ -22,6 +22,7 @@
 
 /* eslint-disable react-refresh/only-export-components */
 import { useCallback, useId } from "react";
+import { useTranslation } from "react-i18next";
 
 import { Badge, Card, CardHeader } from "./primitives";
 import { clsx } from "../lib/clsx";
@@ -35,15 +36,27 @@ export interface ParsedCase {
   inputs: Record<string, unknown>;
 }
 
+/**
+ * Structured parse error so the (non-React) parse helpers stay pure and
+ * i18n-agnostic while the UI resolves the message at render time. `code`
+ * keys into the `caseEditor.*` translations; `detail` carries the raw
+ * JSON parser message (which is locale-independent and not worth
+ * translating) for the `invalidJson` case.
+ */
+export type CaseError =
+  | { code: "empty" }
+  | { code: "notObject" }
+  | { code: "invalidJson"; detail: string };
+
 export interface CaseParseResult {
   parsed: ParsedCase | null;
-  error: string | null;
+  error: CaseError | null;
 }
 
 export function parseCase(draft: CaseDraft): CaseParseResult {
   const trimmed = draft.raw.trim();
   if (!trimmed) {
-    return { parsed: null, error: "case is empty" };
+    return { parsed: null, error: { code: "empty" } };
   }
   try {
     const value = JSON.parse(trimmed) as unknown;
@@ -54,7 +67,7 @@ export function parseCase(draft: CaseDraft): CaseParseResult {
     ) {
       return {
         parsed: null,
-        error: "case must be a JSON object of {variable: value}",
+        error: { code: "notObject" },
       };
     }
     return {
@@ -62,17 +75,17 @@ export function parseCase(draft: CaseDraft): CaseParseResult {
       error: null,
     };
   } catch (err) {
-    const message = err instanceof Error ? err.message : "invalid JSON";
-    return { parsed: null, error: message };
+    const detail = err instanceof Error ? err.message : "invalid JSON";
+    return { parsed: null, error: { code: "invalidJson", detail } };
   }
 }
 
 export function parseCases(drafts: CaseDraft[]): {
   cases: ParsedCase[];
-  errors: Array<string | null>;
+  errors: Array<CaseError | null>;
   hasErrors: boolean;
 } {
-  const errors: Array<string | null> = [];
+  const errors: Array<CaseError | null> = [];
   const cases: ParsedCase[] = [];
   for (const draft of drafts) {
     const { parsed, error } = parseCase(draft);
@@ -105,6 +118,7 @@ export function CaseEditor({
   disabled = false,
   subtitle,
 }: CaseEditorProps) {
+  const { t } = useTranslation();
   const { errors, hasErrors } = parseCases(cases);
 
   const seed = useCallback((): string => {
@@ -136,20 +150,26 @@ export function CaseEditor({
   return (
     <Card>
       <CardHeader
-        title="dataset"
-        subtitle={subtitle ?? "one JSON object per case · keys map to template vars"}
+        title={t("caseEditor.title")}
+        subtitle={subtitle ?? t("caseEditor.defaultSubtitle")}
         action={
           hasErrors ? (
-            <Badge tone="warn">{errors.filter(Boolean).length} invalid</Badge>
+            <Badge tone="warn">
+              {t("caseEditor.invalidBadge", {
+                count: errors.filter(Boolean).length,
+              })}
+            </Badge>
           ) : (
-            <Badge tone="ok">{cases.length} cases</Badge>
+            <Badge tone="ok">
+              {t("caseEditor.casesBadge", { count: cases.length })}
+            </Badge>
           )
         }
       />
       <div className="space-y-3 px-4 py-3">
         {cases.length === 0 ? (
           <div className="rounded-md border border-dashed border-ink-200 px-3 py-4 text-center text-xs italic text-ink-400">
-            no cases yet — add one to enable run
+            {t("caseEditor.noCasesYet")}
           </div>
         ) : (
           cases.map((draft, i) => (
@@ -170,7 +190,7 @@ export function CaseEditor({
           onClick={addOne}
           className="w-full rounded-md border border-dashed border-ink-300 px-3 py-2 text-xs text-ink-600 hover:bg-ink-50 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          + add case
+          {t("caseEditor.addCase")}
         </button>
       </div>
     </Card>
@@ -180,7 +200,7 @@ export function CaseEditor({
 interface CaseRowProps {
   index: number;
   draft: CaseDraft;
-  error: string | null;
+  error: CaseError | null;
   disabled: boolean;
   onChange: (raw: string) => void;
   onRemove: () => void;
@@ -194,7 +214,18 @@ function CaseRow({
   onChange,
   onRemove,
 }: CaseRowProps) {
+  const { t } = useTranslation();
   const textareaId = useId();
+  // Resolve the structured parse error into a localized message. The raw
+  // JSON parser detail is shown verbatim — it's a low-level engine string
+  // (e.g. "Unexpected token") not worth round-tripping through i18n.
+  const errorMessage = error
+    ? error.code === "empty"
+      ? t("caseEditor.errorEmpty")
+      : error.code === "notObject"
+        ? t("caseEditor.errorNotObject")
+        : error.detail
+    : null;
   return (
     <div className="rounded-md border border-ink-100 bg-ink-50/40 p-2">
       <div className="mb-1 flex items-center justify-between">
@@ -202,16 +233,16 @@ function CaseRow({
           htmlFor={textareaId}
           className="text-[11px] uppercase tracking-wide text-ink-500"
         >
-          case #{index}
+          {t("caseEditor.caseLabel", { index })}
         </label>
         <button
           type="button"
           onClick={onRemove}
           disabled={disabled}
           className="text-[11px] text-ink-500 hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-50"
-          aria-label={`remove case ${index}`}
+          aria-label={t("caseEditor.removeCaseLabel", { index })}
         >
-          remove
+          {t("caseEditor.remove")}
         </button>
       </div>
       <textarea
@@ -229,9 +260,9 @@ function CaseRow({
           disabled && "cursor-not-allowed opacity-60",
         )}
       />
-      {error && (
+      {errorMessage && (
         <div className="mt-1 text-[11px] text-rose-600" role="alert">
-          {error}
+          {errorMessage}
         </div>
       )}
     </div>

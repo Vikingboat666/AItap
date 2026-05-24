@@ -25,6 +25,7 @@
  */
 
 import { useMemo } from "react";
+import { useTranslation } from "react-i18next";
 
 import { Card } from "./primitives";
 import { clsx } from "../lib/clsx";
@@ -75,6 +76,7 @@ export function DownstreamImpactBanner({
   onRerunSelected,
   className,
 }: DownstreamImpactBannerProps) {
+  const { t } = useTranslation();
   const unverified = useMemo(
     () => unverifiedNodes(downstreamStatus),
     [downstreamStatus],
@@ -87,9 +89,7 @@ export function DownstreamImpactBanner({
     return null;
   }
 
-  const headline = `${unverified.length} downstream node${
-    unverified.length === 1 ? "" : "s"
-  } unverified`;
+  const headline = t("downstream.headline", { count: unverified.length });
   const nodeList = unverified.join(", ");
 
   return (
@@ -109,11 +109,11 @@ export function DownstreamImpactBanner({
           <div>
             <div className="font-medium">{headline}</div>
             <div className="mt-0.5 text-[11px] text-amber-800">
-              affected: <span className="font-mono">{nodeList}</span>
+              {t("downstream.affected")}{" "}
+              <span className="font-mono">{nodeList}</span>
             </div>
             <div className="mt-1 text-[11px] text-amber-700">
-              the new prompt version was committed without re-running these
-              downstream consumers. their scores may have shifted.
+              {t("downstream.warning")}
             </div>
           </div>
         </div>
@@ -123,25 +123,25 @@ export function DownstreamImpactBanner({
             onClick={onDismiss}
             className="rounded-md bg-white px-2 py-1 text-[11px] font-medium text-amber-800 ring-1 ring-amber-300 hover:bg-amber-100"
           >
-            skip
+            {t("downstream.skip")}
           </button>
           <button
             type="button"
             onClick={onRerunAll}
             disabled
-            title="coming in M5"
+            title={t("downstream.comingInM5")}
             className="cursor-not-allowed rounded-md bg-amber-200 px-2 py-1 text-[11px] font-medium text-amber-700 opacity-70"
           >
-            re-run all
+            {t("downstream.rerunAll")}
           </button>
           <button
             type="button"
             onClick={onRerunSelected}
             disabled
-            title="coming in M5"
+            title={t("downstream.comingInM5")}
             className="cursor-not-allowed rounded-md bg-amber-200 px-2 py-1 text-[11px] font-medium text-amber-700 opacity-70"
           >
-            re-run selected
+            {t("downstream.rerunSelected")}
           </button>
         </div>
       </div>
