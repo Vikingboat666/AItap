@@ -22,6 +22,7 @@
  */
 
 import { useCallback } from "react";
+import { useTranslation } from "react-i18next";
 
 import type { ConvergenceConfig } from "../api/generated";
 
@@ -55,6 +56,7 @@ export function ConvergenceConfigForm({
   onChange,
   disabled = false,
 }: ConvergenceConfigFormProps) {
+  const { t } = useTranslation();
   const update = useCallback(
     (patch: Partial<ConvergenceConfig>) => onChange({ ...value, ...patch }),
     [value, onChange],
@@ -63,7 +65,7 @@ export function ConvergenceConfigForm({
   return (
     <div className="space-y-3 text-xs">
       <NumberField
-        label="max rounds"
+        label={t("convergence.maxRounds")}
         id="convergence-max-rounds"
         value={value.max_rounds ?? DEFAULT_CONVERGENCE_CONFIG.max_rounds}
         step={1}
@@ -71,10 +73,10 @@ export function ConvergenceConfigForm({
         max={20}
         disabled={disabled}
         onChange={(n) => update({ max_rounds: n })}
-        hint="loop stops after N rounds regardless of score"
+        hint={t("convergence.maxRoundsHint")}
       />
       <NumberField
-        label="delta from baseline"
+        label={t("convergence.deltaFromBaseline")}
         id="convergence-delta"
         value={
           value.delta_from_baseline ??
@@ -85,10 +87,10 @@ export function ConvergenceConfigForm({
         max={1}
         disabled={disabled}
         onChange={(n) => update({ delta_from_baseline: n })}
-        hint="round N total − baseline total ≥ this ⇒ converge"
+        hint={t("convergence.deltaHint")}
       />
       <NumberField
-        label="stagnation window"
+        label={t("convergence.stagnationWindow")}
         id="convergence-stag-window"
         value={
           value.stagnation_window ??
@@ -99,10 +101,10 @@ export function ConvergenceConfigForm({
         max={10}
         disabled={disabled}
         onChange={(n) => update({ stagnation_window: n })}
-        hint="rounds we need to plateau before stopping"
+        hint={t("convergence.stagnationWindowHint")}
       />
       <NumberField
-        label="stagnation epsilon"
+        label={t("convergence.stagnationEpsilon")}
         id="convergence-stag-eps"
         value={
           value.stagnation_epsilon ??
@@ -113,7 +115,7 @@ export function ConvergenceConfigForm({
         max={1}
         disabled={disabled}
         onChange={(n) => update({ stagnation_epsilon: n })}
-        hint="round-over-round delta below this counts as no movement"
+        hint={t("convergence.stagnationEpsilonHint")}
       />
     </div>
   );

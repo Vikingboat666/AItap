@@ -28,6 +28,8 @@
 
 import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 
 import { IterateService } from "../api/generated";
 import type {
@@ -43,6 +45,12 @@ import {
 import { clsx } from "../lib/clsx";
 
 export type AutoIterateMode = "auto" | "guided" | "manual";
+
+const MODE_LABEL_KEY: Record<AutoIterateMode, string> = {
+  auto: "iterate.modeAuto",
+  guided: "iterate.modeGuided",
+  manual: "iterate.modeManual",
+};
 
 export interface AutoIterateModalProps {
   /** Prompt id to iterate. Disabled when null. */
@@ -69,6 +77,7 @@ export function AutoIterateModal({
   onClose,
   onStart,
 }: AutoIterateModalProps) {
+  const { t } = useTranslation();
   const [mode, setMode] = useState<AutoIterateMode>("auto");
   const [instruction, setInstruction] = useState("");
   const [manualText, setManualText] = useState("");
@@ -87,7 +96,7 @@ export function AutoIterateModal({
   const startMutation = useMutation({
     mutationFn: async () => {
       if (!promptId || trimmedDatasetId.length === 0) {
-        throw new Error("prompt + dataset must be selected before starting");
+        throw new Error(t("iterate.errorPromptDataset"));
       }
       const requestBody: IterateSessionRequest = {
         prompt_id: promptId,
@@ -122,7 +131,7 @@ export function AutoIterateModal({
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="auto-iterate launch"
+      aria-label={t("iterate.launchLabel")}
       className="fixed inset-0 z-40 flex items-center justify-center bg-ink-900/40 px-4 py-8"
       onClick={onClose}
     >
@@ -133,10 +142,10 @@ export function AutoIterateModal({
         <div className="flex items-start justify-between border-b border-ink-100 px-4 py-3">
           <div>
             <div className="text-sm font-semibold text-ink-800">
-              auto-iterate
+              {t("iterate.launchTitle")}
             </div>
             <div className="mt-0.5 text-xs text-ink-500">
-              run a self-iteration session against the selected dataset
+              {t("iterate.launchSubtitle")}
             </div>
           </div>
           <button
@@ -144,7 +153,7 @@ export function AutoIterateModal({
             onClick={onClose}
             className="rounded-md bg-ink-100 px-2 py-1 text-xs text-ink-700 hover:bg-ink-200"
           >
-            close
+            {t("common.close")}
           </button>
         </div>
 
@@ -154,34 +163,35 @@ export function AutoIterateModal({
               htmlFor="auto-iterate-dataset"
               className="mb-1 block text-[11px] uppercase text-ink-400"
             >
-              dataset
+              {t("iterate.dataset")}
             </label>
             <input
               id="auto-iterate-dataset"
               type="text"
               value={datasetId}
               onChange={(e) => setDatasetId(e.target.value)}
-              placeholder="e.g. email_summarize"
+              placeholder={t("iterate.datasetPlaceholder")}
               className="w-full rounded-md border border-ink-200 px-2 py-1 text-xs focus:border-brand-500 focus:outline-none"
             />
             <div className="mt-1 text-[10px] italic text-ink-500">
-              Dataset file under{" "}
+              {t("iterate.datasetHintPrefix")}{" "}
               <code className="font-mono text-ink-700">
                 .aitap/datasets/&lt;name&gt;.cases.jsonl
               </code>
-              . Use the <code className="font-mono text-ink-700">aitap</code>{" "}
-              CLI to create a dataset, or provide an existing name.
+              {t("iterate.datasetHintMiddle")}{" "}
+              <code className="font-mono text-ink-700">aitap</code>{" "}
+              {t("iterate.datasetHintSuffix")}
             </div>
             {!datasetReady && (
               <div className="mt-1 text-[11px] italic text-amber-700">
-                dataset name is required
+                {t("iterate.datasetRequired")}
               </div>
             )}
           </section>
 
           <section>
             <div className="mb-2 text-[11px] uppercase text-ink-400">
-              mode
+              {t("iterate.mode")}
             </div>
             <div className="flex gap-1">
               {(["auto", "guided", "manual"] as const).map((m) => (
@@ -197,12 +207,12 @@ export function AutoIterateModal({
                       : "bg-ink-100 text-ink-700 hover:bg-ink-200",
                   )}
                 >
-                  {m}
+                  {t(MODE_LABEL_KEY[m])}
                 </button>
               ))}
             </div>
             <div className="mt-2 text-[11px] text-ink-500">
-              {modeHint(mode)}
+              {modeHint(mode, t)}
             </div>
           </section>
 
@@ -212,19 +222,19 @@ export function AutoIterateModal({
                 htmlFor="auto-iterate-instruction"
                 className="mb-1 block text-[11px] uppercase text-ink-400"
               >
-                instruction
+                {t("iterate.instruction")}
               </label>
               <input
                 id="auto-iterate-instruction"
                 type="text"
                 value={instruction}
                 onChange={(e) => setInstruction(e.target.value)}
-                placeholder="e.g. tone should be more professional"
+                placeholder={t("iterate.instructionPlaceholder")}
                 className="w-full rounded-md border border-ink-200 px-2 py-1 text-xs focus:border-brand-500 focus:outline-none"
               />
               {!guidedReady && (
                 <div className="mt-1 text-[11px] italic text-amber-700">
-                  instruction is required for guided mode
+                  {t("iterate.instructionRequired")}
                 </div>
               )}
             </section>
@@ -236,24 +246,23 @@ export function AutoIterateModal({
                 htmlFor="auto-iterate-manual"
                 className="mb-1 block text-[11px] uppercase text-ink-400"
               >
-                round 2 prompt text
+                {t("iterate.round2PromptText")}
               </label>
               <textarea
                 id="auto-iterate-manual"
                 value={manualText}
                 onChange={(e) => setManualText(e.target.value)}
                 rows={6}
-                placeholder="the full new prompt body — replaces the baseline verbatim for round 2"
+                placeholder={t("iterate.manualPlaceholder")}
                 className="w-full rounded-md border border-ink-200 px-2 py-1 font-mono text-[11px] focus:border-brand-500 focus:outline-none"
               />
               {!manualReady && (
                 <div className="mt-1 text-[11px] italic text-amber-700">
-                  manual mode needs the new prompt body
+                  {t("iterate.manualRequired")}
                 </div>
               )}
               <div className="mt-1 text-[10px] italic text-ink-400">
-                multi-round manual lands in a follow-up — for now this becomes
-                round 2 only.
+                {t("iterate.manualHint")}
               </div>
             </section>
           )}
@@ -265,7 +274,9 @@ export function AutoIterateModal({
               aria-expanded={showConvergence}
               className="text-[11px] text-ink-600 hover:text-ink-900"
             >
-              {showConvergence ? "▾ convergence" : "▸ convergence"}
+              {showConvergence
+                ? t("iterate.convergenceExpanded")
+                : t("iterate.convergenceCollapsed")}
             </button>
             {showConvergence && (
               <div className="mt-2 rounded-md border border-ink-100 bg-ink-50/40 p-3">
@@ -290,9 +301,9 @@ export function AutoIterateModal({
         <div className="flex items-center justify-between border-t border-ink-100 bg-ink-50/60 px-4 py-3">
           <div className="flex items-center gap-2 text-[11px] text-ink-500">
             {!promptId || !datasetReady ? (
-              <Badge tone="warn">prompt + dataset required</Badge>
+              <Badge tone="warn">{t("iterate.promptDatasetRequired")}</Badge>
             ) : (
-              <Badge tone="brand">{mode}</Badge>
+              <Badge tone="brand">{t(MODE_LABEL_KEY[mode])}</Badge>
             )}
           </div>
           <div className="flex gap-2">
@@ -301,7 +312,7 @@ export function AutoIterateModal({
               onClick={onClose}
               className="rounded-md bg-ink-100 px-3 py-1.5 text-xs text-ink-700 hover:bg-ink-200"
             >
-              cancel
+              {t("common.cancel")}
             </button>
             <button
               type="button"
@@ -309,8 +320,8 @@ export function AutoIterateModal({
               onClick={() => startMutation.mutate()}
               title={
                 !datasetReady
-                  ? "Provide a dataset name"
-                  : "start the auto-iterate session"
+                  ? t("iterate.provideDatasetName")
+                  : t("iterate.startSessionTitle")
               }
               className={clsx(
                 "rounded-md px-3 py-1.5 text-xs font-medium text-white",
@@ -319,7 +330,9 @@ export function AutoIterateModal({
                   : "cursor-not-allowed bg-ink-200",
               )}
             >
-              {startMutation.isPending ? "starting…" : "start auto-iterate"}
+              {startMutation.isPending
+                ? t("iterate.starting")
+                : t("iterate.startAutoIterate")}
             </button>
           </div>
         </div>
@@ -328,13 +341,13 @@ export function AutoIterateModal({
   );
 }
 
-function modeHint(mode: AutoIterateMode): string {
+function modeHint(mode: AutoIterateMode, t: TFunction): string {
   switch (mode) {
     case "auto":
-      return "critic LLM rewrites freely based on judge feedback — fully automatic.";
+      return t("iterate.modeHintAuto");
     case "guided":
-      return "critic LLM follows your direction — provide a single-sentence instruction.";
+      return t("iterate.modeHintGuided");
     case "manual":
-      return "no LLM rewrite — you supply the new prompt body verbatim for round 2.";
+      return t("iterate.modeHintManual");
   }
 }
