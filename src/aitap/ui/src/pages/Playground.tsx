@@ -189,6 +189,15 @@ export function Playground() {
     setPipelineSelection([]);
   }, []);
 
+  // Switching target clears the selection too: node ids belong to one
+  // pipeline's DAG, so carrying a selection from pipeline A into B would
+  // dispatch ids that don't exist there (the backend runner 422s on the
+  // dangling reference). Reset so the picker starts clean on the new DAG.
+  const handlePickTarget = useCallback((target: TargetSelection) => {
+    setSelectedTarget(target);
+    setPipelineSelection([]);
+  }, []);
+
   const handleNodeClick = useCallback(
     (promptId: string) => {
       if (mode === "node") {
@@ -385,7 +394,7 @@ export function Playground() {
         <TargetCard
           targetLabel={targetLabel}
           selectedTarget={selectedTarget}
-          onPickTarget={setSelectedTarget}
+          onPickTarget={handlePickTarget}
           prompts={promptsQ.data?.prompts ?? []}
           pipelines={pipelinesQ.data?.pipelines ?? []}
           promptsLoading={promptsQ.isLoading}

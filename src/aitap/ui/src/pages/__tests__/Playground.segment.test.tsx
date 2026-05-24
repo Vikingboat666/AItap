@@ -276,4 +276,62 @@ describe("Playground — pipeline run-mode selection", () => {
     expect(screen.queryByRole("alert")).toBeNull();
     expect(runButton()).toBeEnabled();
   });
+
+  it("switching to a different pipeline target clears the selection", async () => {
+    installRunCapture();
+    server.use(
+      http.get("/api/pipelines", () =>
+        HttpResponse.json({
+          pipelines: [
+            {
+              id: "pl_test_one",
+              name: "test pipeline one",
+              node_count: 2,
+              edge_count: 1,
+              entry_count: 1,
+              exit_count: 1,
+            },
+            {
+              id: "pl_test_split",
+              name: "split pipeline",
+              node_count: 3,
+              edge_count: 1,
+              entry_count: 2,
+              exit_count: 2,
+            },
+          ],
+        }),
+      ),
+      http.get("/api/pipelines/:pipelineId", ({ params }) =>
+        params.pipelineId === "pl_test_split"
+          ? HttpResponse.json(pipelineDisconnectedFixture)
+          : HttpResponse.json(pipelineDetailFixture),
+      ),
+    );
+
+    renderWithProviders(<Playground />, {
+      route: "/playground/pipeline/pl_test_one",
+      path: "/playground/:targetKind/:targetId",
+    });
+
+    await screen.findByText(/pick a node/i);
+    await clickNode("p_test_alpha");
+    expect(runButton()).toBeEnabled();
+
+    // Switch to a different pipeline via the target list. A node id from
+    // pipeline one must not survive — Run drops back to disabled until a
+    // node in the new DAG is picked.
+    await userEvent.click(
+      await screen.findByRole("button", { name: /split pipeline/i }),
+    );
+    await waitFor(() => expect(runButton()).toBeDisabled());
+    // The new DAG's nodes render unselected.
+    await clickNode("p_test_gamma");
+    expect(nodeButton("p_test_gamma").getAttribute("data-selected")).toBe(
+      "true",
+    );
+    expect(nodeButton("p_test_alpha").getAttribute("data-selected")).toBe(
+      "false",
+    );
+  });
 });
