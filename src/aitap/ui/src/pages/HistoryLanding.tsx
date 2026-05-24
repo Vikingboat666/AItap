@@ -1,20 +1,22 @@
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 
 import { api } from "../api/client";
 import { Badge, Card, CardHeader, EmptyState } from "../components/primitives";
 
 export function HistoryLanding() {
+  const { t } = useTranslation();
   const q = useQuery({ queryKey: ["prompts"], queryFn: api.listPrompts });
 
   if (q.isLoading) {
-    return <Card className="p-6 text-sm text-ink-500">loading…</Card>;
+    return <Card className="p-6 text-sm text-ink-500">{t("history.loading")}</Card>;
   }
   if (!q.data?.prompts.length) {
     return (
       <EmptyState
-        title="no prompts to show history for"
-        hint="run `aitap scan` first"
+        title={t("history.noPromptsToShow")}
+        hint={t("history.noPromptsHint")}
       />
     );
   }
@@ -22,8 +24,8 @@ export function HistoryLanding() {
   return (
     <Card>
       <CardHeader
-        title="prompt version history"
-        subtitle="pick a prompt to see its version timeline"
+        title={t("history.landingTitle")}
+        subtitle={t("history.landingSubtitle")}
       />
       <ul className="divide-y divide-ink-100">
         {q.data.prompts.map((p) => (
@@ -40,11 +42,11 @@ export function HistoryLanding() {
                   <Badge tone="brand">{p.provider}</Badge>
                 </div>
                 <div className="mt-1 truncate text-xs text-ink-500">
-                  {p.purpose ?? "—"}
+                  {p.purpose ?? t("common.dash")}
                 </div>
               </div>
               <span className="shrink-0 font-mono text-[11px] text-ink-400">
-                latest v{p.latest_version}
+                {t("history.latestVersion", { version: p.latest_version })}
               </span>
             </Link>
           </li>

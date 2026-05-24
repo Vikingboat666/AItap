@@ -1,13 +1,16 @@
 import { Link } from "react-router-dom";
+import { useTranslation } from "react-i18next";
+
 import { EmptyState } from "../components/primitives";
 
 export function NotFound() {
+  const { t } = useTranslation();
   return (
     <EmptyState
-      title="page not found"
+      title={t("notFound.title")}
       hint={
         <Link to="/" className="text-brand-600 hover:underline">
-          back to inventory
+          {t("notFound.backToInventory")}
         </Link>
       }
     />
