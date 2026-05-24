@@ -53,6 +53,11 @@ export class RunsService {
      * import. The adapter is responsible for marking the run *done* /
      * *failed* and stamping the final cost. If the module is unavailable
      * we leave the row in *running* so a later worktree merge can attach.
+     *
+     * Wave 5 addition (A·D1/A·D3): pipeline runs carry an explicit
+     * ``pipeline_mode`` plus mode-specific selectors. We validate their
+     * consistency here — *before* writing the runs row — so a malformed
+     * request 422s cleanly without leaving an orphan ``running`` row behind.
      * @returns RunResponse Successful Response
      * @throws ApiError
      */

@@ -20,6 +20,8 @@ import type { PipelineDetailResponse } from "../api/generated/models/PipelineDet
 import type { PipelineListResponse } from "../api/generated/models/PipelineListResponse";
 import type { PromptDetailResponse } from "../api/generated/models/PromptDetailResponse";
 import type { PromptListResponse } from "../api/generated/models/PromptListResponse";
+import type { RunDetailResponse } from "../api/generated/models/RunDetailResponse";
+import type { SettingsResponse } from "../api/generated/models/SettingsResponse";
 
 export const promptListFixture: PromptListResponse = {
   prompts: [
@@ -145,6 +147,91 @@ export const pipelineDetailFixture: PipelineDetailResponse = {
       latest_version: 1,
     },
   },
+};
+
+/**
+ * A three-node pipeline whose edges form two disconnected fragments:
+ *   alpha -> beta     (one fragment)
+ *   gamma             (an island — no edges)
+ * Used by the segment-mode connectivity tests: selecting {alpha, beta}
+ * is contiguous (one component); selecting {alpha, gamma} is not (two
+ * components) → non-blocking "not connected" warning.
+ */
+export const pipelineDisconnectedFixture: PipelineDetailResponse = {
+  pipeline: {
+    id: "pl_test_split",
+    name: "split pipeline",
+    nodes: [
+      { prompt_id: "p_test_alpha", label: "alpha" },
+      { prompt_id: "p_test_beta", label: "beta" },
+      { prompt_id: "p_test_gamma", label: "gamma" },
+    ],
+    edges: [
+      {
+        source: "p_test_alpha",
+        target: "p_test_beta",
+        kind: "variable",
+        via: "payload",
+      },
+    ],
+    entry_points: ["p_test_alpha", "p_test_gamma"],
+    exit_points: ["p_test_beta", "p_test_gamma"],
+  },
+  site_index: {
+    p_test_alpha: {
+      id: "p_test_alpha",
+      name: "alpha_prompt",
+      provider: "openai",
+      file: "app/alpha.py",
+      line_start: 10,
+      purpose: "alpha purpose",
+      confidence: "high",
+      latest_version: 2,
+    },
+    p_test_beta: {
+      id: "p_test_beta",
+      name: "beta_prompt",
+      provider: "anthropic",
+      file: "app/beta.py",
+      line_start: 22,
+      purpose: null,
+      confidence: "medium",
+      latest_version: 1,
+    },
+    p_test_gamma: {
+      id: "p_test_gamma",
+      name: "gamma_prompt",
+      provider: "openai",
+      file: "app/gamma.py",
+      line_start: 5,
+      purpose: null,
+      confidence: "high",
+      latest_version: 1,
+    },
+  },
+};
+
+export const settingsFixture: SettingsResponse = {
+  cost_per_run_usd: 0.01,
+  cost_per_session_usd: 0.05,
+  judge_model: null,
+  model: "gpt-4o-mini",
+  provider: "openai",
+  providers_available: [],
+};
+
+export const runDetailFixture: RunDetailResponse = {
+  run_id: "run_test_one",
+  status: "done",
+  target_id: "pl_test_one",
+  target_kind: "pipeline",
+  target_version: 1,
+  cost_usd: 0.0021,
+  started_at: "2026-05-23T10:00:00Z",
+  finished_at: "2026-05-23T10:00:05Z",
+  outputs: [
+    { case_index: 0, text: "ok", error: null, image_path: null },
+  ],
 };
 
 /**

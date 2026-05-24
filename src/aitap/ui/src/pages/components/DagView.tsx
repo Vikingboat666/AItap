@@ -16,6 +16,13 @@ import type { PromptSummary } from "../../api/generated/models/PromptSummary";
 interface DagViewProps {
   pipeline: Pipeline;
   siteIndex: Record<string, PromptSummary>;
+  /**
+   * Ids of nodes to render as selected. DagView is a *controlled*
+   * component: it only reflects this prop and reports clicks via
+   * `onNodeClick`; the parent (Playground) owns the toggle logic so the
+   * same selection drives both the highlight here and the run payload.
+   */
+  selectedNodeIds?: string[];
   onNodeClick?: (promptId: string) => void;
   onEdgeClick?: (edge: PipelineEdge) => void;
 }
@@ -125,32 +132,41 @@ function makeLabel(node: PipelineNode, summary?: PromptSummary): string {
 export function DagView({
   pipeline,
   siteIndex,
+  selectedNodeIds,
   onNodeClick,
   onEdgeClick,
 }: DagViewProps) {
   const positions = useMemo(() => layout(pipeline), [pipeline]);
+  const selectedSet = useMemo(
+    () => new Set(selectedNodeIds ?? []),
+    [selectedNodeIds],
+  );
 
   const nodes: Node[] = useMemo(
     () =>
       pipeline.nodes.map((n) => {
         const summary = siteIndex[n.prompt_id];
+        const selected = selectedSet.has(n.prompt_id);
         return {
           id: n.prompt_id,
           position: positions[n.prompt_id] ?? { x: 0, y: 0 },
-          data: { label: makeLabel(n, summary), summary },
+          // `selected` rides in `data` (not just `style`) so the flag is
+          // assertable in tests and stays the single source of the
+          // highlight below.
+          data: { label: makeLabel(n, summary), summary, selected },
           type: "default",
           style: {
             width: NODE_WIDTH,
             padding: 10,
             borderRadius: 8,
-            border: "1px solid #dde1e9",
-            background: "#ffffff",
+            border: selected ? "2px solid #475dff" : "1px solid #dde1e9",
+            background: selected ? "#eef1ff" : "#ffffff",
             fontSize: 12,
             fontFamily: "inherit",
           },
         };
       }),
-    [pipeline, siteIndex, positions],
+    [pipeline, siteIndex, positions, selectedSet],
   );
 
   const edges: Edge[] = useMemo(

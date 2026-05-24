@@ -10,6 +10,8 @@ export type RunCreate = {
     dataset_id?: (string | null);
     model: string;
     parameters: CallParameters;
+    pipeline_mode?: ('node' | 'segment' | 'end_to_end' | null);
+    pipeline_node_id?: (string | null);
     pipeline_segment?: (Array<string> | null);
     provider: Provider;
     target_id: string;
