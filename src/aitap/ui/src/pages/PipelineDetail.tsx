@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 
 import { apiClient } from "../api/client";
 import { Badge, Card, CardHeader } from "../components/primitives";
@@ -10,6 +11,7 @@ import { DagView } from "./components/DagView";
 import type { PipelineEdge } from "../api/generated/models/PipelineEdge";
 
 export function PipelineDetail() {
+  const { t } = useTranslation();
   const { id = "" } = useParams();
   const navigate = useNavigate();
   const [selectedEdge, setSelectedEdge] = useState<PipelineEdge | null>(null);
@@ -24,12 +26,12 @@ export function PipelineDetail() {
   });
 
   if (q.isLoading) {
-    return <BlockSkeleton label="loading pipeline…" />;
+    return <BlockSkeleton label={t("pipeline.loading")} />;
   }
   if (q.isError) {
     return (
       <ErrorState
-        title="couldn't load pipeline"
+        title={t("pipeline.couldntLoad")}
         error={q.error}
         onRetry={() => void q.refetch()}
       />
@@ -37,7 +39,7 @@ export function PipelineDetail() {
   }
   if (!q.data) {
     return (
-      <Card className="p-6 text-sm text-ink-500">no pipeline data</Card>
+      <Card className="p-6 text-sm text-ink-500">{t("pipeline.noData")}</Card>
     );
   }
   const { pipeline, site_index } = q.data;
@@ -47,17 +49,16 @@ export function PipelineDetail() {
       <Card>
         <CardHeader
           title={pipeline.name}
-          subtitle={
-            <>
-              {pipeline.nodes.length} nodes · {pipeline.edges.length} edges
-            </>
-          }
+          subtitle={t("pipeline.meta", {
+            nodes: pipeline.nodes.length,
+            edges: pipeline.edges.length,
+          })}
           action={
             <Link
               to={`/playground/pipeline/${encodeURIComponent(pipeline.id)}`}
               className="rounded-md bg-brand-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-700"
             >
-              run pipeline
+              {t("pipeline.runPipeline")}
             </Link>
           }
         />
@@ -76,7 +77,7 @@ export function PipelineDetail() {
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card>
-          <CardHeader title="nodes" />
+          <CardHeader title={t("pipeline.nodes")} />
           <ul className="divide-y divide-ink-100">
             {pipeline.nodes.map((n) => {
               const summary = site_index[n.prompt_id];
@@ -93,7 +94,7 @@ export function PipelineDetail() {
                       <div className="text-ink-500">
                         {summary
                           ? `${summary.file}:${summary.line_start}`
-                          : "unknown prompt — possibly stale pipeline"}
+                          : t("pipeline.unknownPrompt")}
                       </div>
                     </div>
                     {summary?.provider && (
@@ -108,31 +109,31 @@ export function PipelineDetail() {
 
         <Card>
           <CardHeader
-            title="selected edge"
-            subtitle="click an edge in the DAG to inspect"
+            title={t("pipeline.selectedEdge")}
+            subtitle={t("pipeline.selectedEdgeSubtitle")}
           />
           <div className="px-4 py-3 text-xs">
             {selectedEdge ? (
               <dl className="grid grid-cols-3 gap-2">
-                <dt className="text-ink-500">source</dt>
+                <dt className="text-ink-500">{t("pipeline.source")}</dt>
                 <dd className="col-span-2 font-mono text-ink-700">
                   {selectedEdge.source}
                 </dd>
-                <dt className="text-ink-500">target</dt>
+                <dt className="text-ink-500">{t("pipeline.target")}</dt>
                 <dd className="col-span-2 font-mono text-ink-700">
                   {selectedEdge.target}
                 </dd>
-                <dt className="text-ink-500">kind</dt>
+                <dt className="text-ink-500">{t("pipeline.kind")}</dt>
                 <dd className="col-span-2">
                   <Badge>{selectedEdge.kind}</Badge>
                 </dd>
-                <dt className="text-ink-500">via</dt>
+                <dt className="text-ink-500">{t("pipeline.via")}</dt>
                 <dd className="col-span-2 font-mono text-ink-700">
-                  {selectedEdge.via ?? "—"}
+                  {selectedEdge.via ?? t("common.dash")}
                 </dd>
                 {selectedEdge.confidence && (
                   <>
-                    <dt className="text-ink-500">confidence</dt>
+                    <dt className="text-ink-500">{t("pipeline.confidence")}</dt>
                     <dd className="col-span-2">
                       <Badge>{selectedEdge.confidence}</Badge>
                     </dd>
@@ -141,7 +142,7 @@ export function PipelineDetail() {
               </dl>
             ) : (
               <span className="italic text-ink-400">
-                no edge selected
+                {t("pipeline.noEdgeSelected")}
               </span>
             )}
           </div>
@@ -157,11 +158,12 @@ export function PipelineDetail() {
  * shared component) because no other page renders DAG edges.
  */
 function EdgeLegend() {
+  const { t } = useTranslation();
   return (
     <div className="flex flex-wrap items-center gap-4 border-t border-ink-100 px-4 py-2 text-[11px] text-ink-500">
       <span className="flex items-center gap-1">
         <span className="inline-block h-px w-6 bg-[#475dff]" />
-        solid: resolved dataflow (variable / lc_pipe / function)
+        {t("dag.legendSolid")}
       </span>
       <span className="flex items-center gap-1">
         <span
@@ -171,7 +173,7 @@ function EdgeLegend() {
               "repeating-linear-gradient(90deg, #b9c1cf 0 4px, transparent 4px 8px)",
           }}
         />
-        dashed: inferred (llamaindex / unresolved)
+        {t("dag.legendDashed")}
       </span>
     </div>
   );
