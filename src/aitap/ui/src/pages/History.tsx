@@ -27,6 +27,7 @@ import type { ReactNode } from "react";
 import { useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 
 import { HistoryService } from "../api/generated";
 import type { HistoryEntry, HistoryResponse } from "../api/generated";
@@ -42,6 +43,7 @@ interface DiffTarget {
 }
 
 export function History() {
+  const { t } = useTranslation();
   const { promptId = "" } = useParams();
   const [diffTarget, setDiffTarget] = useState<DiffTarget | null>(null);
   const [tab, setTab] = useState<HistoryTab>("versions");
@@ -64,8 +66,8 @@ export function History() {
   if (!promptId) {
     return (
       <EmptyState
-        title="no prompt selected"
-        hint="open a prompt from the inventory to view its history"
+        title={t("history.noPromptSelected")}
+        hint={t("history.noPromptSelectedHint")}
       />
     );
   }
@@ -78,19 +80,19 @@ export function History() {
     return (
       <Card className="space-y-3 p-6">
         <div className="text-sm font-medium text-rose-700">
-          failed to load history
+          {t("history.failedToLoad")}
         </div>
         <div className="text-xs text-ink-500">
           {historyQ.error instanceof Error
             ? historyQ.error.message
-            : "unknown error"}
+            : t("common.unknownError")}
         </div>
         <button
           type="button"
           onClick={() => historyQ.refetch()}
           className="rounded-md bg-brand-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-700"
         >
-          retry
+          {t("common.retry")}
         </button>
       </Card>
     );
@@ -110,12 +112,14 @@ export function History() {
 
           <Card>
             <CardHeader
-              title="version history"
-              subtitle={`prompt ${historyQ.data.prompt_id}`}
+              title={t("history.versionHistory")}
+              subtitle={t("history.promptSubtitle", {
+                promptId: historyQ.data.prompt_id,
+              })}
             />
             {entries.length === 0 ? (
               <div className="px-4 py-6 text-xs italic text-ink-400">
-                no versions recorded yet
+                {t("history.noVersionsYet")}
               </div>
             ) : (
               <ol className="divide-y divide-ink-100">
@@ -158,32 +162,37 @@ function HistoryTabs({
   tab: HistoryTab;
   onChange: (next: HistoryTab) => void;
 }) {
+  const { t } = useTranslation();
   // Two-tab control: "versions" (existing prompt_versions timeline) and
   // "iterations" (Wave 4 self-iteration sessions). Implemented as plain
   // buttons rather than a routing change so deep links continue to
   // resolve to the historical default (versions).
+  const tabLabelKey: Record<HistoryTab, string> = {
+    versions: "history.tabVersions",
+    iterations: "history.tabIterations",
+  };
   return (
     <div
       role="tablist"
-      aria-label="history view"
+      aria-label={t("history.tablistLabel")}
       className="flex gap-1 border-b border-ink-200"
     >
-      {(["versions", "iterations"] as const).map((t) => (
+      {(["versions", "iterations"] as const).map((value) => (
         <button
-          key={t}
+          key={value}
           role="tab"
           type="button"
-          aria-selected={tab === t}
-          data-tab={t}
-          onClick={() => onChange(t)}
+          aria-selected={tab === value}
+          data-tab={value}
+          onClick={() => onChange(value)}
           className={clsx(
             "rounded-t-md px-3 py-1.5 text-xs",
-            tab === t
+            tab === value
               ? "border border-b-0 border-ink-200 bg-white font-medium text-brand-700"
               : "text-ink-500 hover:text-ink-700",
           )}
         >
-          {t}
+          {t(tabLabelKey[value])}
         </button>
       ))}
     </div>
@@ -197,6 +206,7 @@ interface VersionRowProps {
 }
 
 function VersionRow({ entry, previous, onDiff }: VersionRowProps) {
+  const { t } = useTranslation();
   return (
     <li className="flex items-start justify-between gap-4 px-4 py-3 text-xs">
       <div>
@@ -207,11 +217,11 @@ function VersionRow({ entry, previous, onDiff }: VersionRowProps) {
           </Badge>
           {entry.parent_version != null && (
             <span className="text-[11px] text-ink-400">
-              parent v{entry.parent_version}
+              {t("history.parentVersion", { version: entry.parent_version })}
             </span>
           )}
         </div>
-        <div className="mt-1 text-ink-500">{entry.note ?? "no note"}</div>
+        <div className="mt-1 text-ink-500">{entry.note ?? t("common.noNote")}</div>
         <div className="mt-1 text-[11px] text-ink-400">
           {new Date(entry.created_at).toLocaleString()}
         </div>
@@ -222,7 +232,9 @@ function VersionRow({ entry, previous, onDiff }: VersionRowProps) {
             {(entry.avg_score * 100).toFixed(0)}%
           </div>
         ) : (
-          <div className="text-[11px] italic text-ink-400">no score</div>
+          <div className="text-[11px] italic text-ink-400">
+            {t("common.noScore")}
+          </div>
         )}
         <button
           type="button"
@@ -230,8 +242,11 @@ function VersionRow({ entry, previous, onDiff }: VersionRowProps) {
           disabled={!previous}
           title={
             previous
-              ? `compare v${entry.version} vs v${previous.version}`
-              : "no earlier version to diff against"
+              ? t("history.compareTitle", {
+                  version: entry.version,
+                  previous: previous.version,
+                })
+              : t("history.noEarlierToDiff")
           }
           className={clsx(
             "rounded-md px-2 py-1 text-[11px] font-medium",
@@ -240,7 +255,7 @@ function VersionRow({ entry, previous, onDiff }: VersionRowProps) {
               : "cursor-not-allowed bg-ink-50 text-ink-300",
           )}
         >
-          diff
+          {t("history.diff")}
         </button>
       </div>
     </li>
@@ -257,6 +272,7 @@ interface ScoreChartProps {
  * tiny, and ad-hoc SVG keeps the bundle lean and the styling on-brand.
  */
 function ScoreChart({ entries }: ScoreChartProps) {
+  const { t } = useTranslation();
   // Render ascending by version (so the eye walks left-to-right through
   // time). `entries` comes ascending from the API but we don't trust
   // that — sort defensively.
@@ -268,17 +284,17 @@ function ScoreChart({ entries }: ScoreChartProps) {
   return (
     <Card>
       <CardHeader
-        title="score by version"
+        title={t("history.scoreByVersion")}
         subtitle={
           sorted.length === 0
-            ? "no versions yet"
-            : `${sorted.length} version${sorted.length === 1 ? "" : "s"}`
+            ? t("history.noVersionsSubtitle")
+            : t("history.versionsCount", { count: sorted.length })
         }
       />
       <div className="px-4 py-4">
         {sorted.length === 0 ? (
           <div className="text-xs italic text-ink-400">
-            score history will appear here once iterations run
+            {t("history.scoreHistoryEmpty")}
           </div>
         ) : (
           <ChartBars entries={sorted} />
@@ -289,6 +305,7 @@ function ScoreChart({ entries }: ScoreChartProps) {
 }
 
 function ChartBars({ entries }: { entries: HistoryEntry[] }) {
+  const { t } = useTranslation();
   // Layout constants — keep the SVG viewBox responsive while still
   // pixel-snapping the labels.
   const width = 600;
@@ -307,7 +324,7 @@ function ChartBars({ entries }: { entries: HistoryEntry[] }) {
     <svg
       viewBox={`0 0 ${width} ${height}`}
       role="img"
-      aria-label="average score per version"
+      aria-label={t("history.scoreChartLabel")}
       className="w-full"
     >
       {/* y-axis baseline */}
@@ -354,9 +371,12 @@ function ChartBars({ entries }: { entries: HistoryEntry[] }) {
               }
             >
               <title>
-                {`v${entry.version} — ${
-                  hasScore ? `${(score * 100).toFixed(0)}%` : "no score"
-                }`}
+                {t("history.scoreBarTitle", {
+                  version: entry.version,
+                  score: hasScore
+                    ? `${(score * 100).toFixed(0)}%`
+                    : t("common.noScore"),
+                })}
               </title>
             </rect>
             <text
@@ -387,6 +407,7 @@ interface DiffModalProps {
  * comparison today.
  */
 function DiffModal({ promptId, target, onClose }: DiffModalProps) {
+  const { t } = useTranslation();
   const { current, previous } = target;
   return (
     <div
@@ -403,34 +424,38 @@ function DiffModal({ promptId, target, onClose }: DiffModalProps) {
         <div className="flex items-center justify-between border-b border-ink-100 px-4 py-3">
           <div>
             <div className="text-sm font-semibold text-ink-800">
-              diff{" "}
+              {t("history.diffHeading")}{" "}
               <span className="font-mono text-ink-600">
-                {previous ? `v${previous.version}` : "—"} → v{current.version}
+                {t("history.diffArrow", {
+                  previous: previous ? `v${previous.version}` : t("common.dash"),
+                  current: current.version,
+                })}
               </span>
             </div>
-            <div className="text-[11px] text-ink-500">prompt {promptId}</div>
+            <div className="text-[11px] text-ink-500">
+              {t("history.diffPromptId", { promptId })}
+            </div>
           </div>
           <button
             type="button"
             onClick={onClose}
             className="rounded-md bg-ink-100 px-2 py-1 text-xs text-ink-700 hover:bg-ink-200"
           >
-            close
+            {t("common.close")}
           </button>
         </div>
         <div className="grid grid-cols-1 gap-3 px-4 py-4 md:grid-cols-2">
-          <DiffPane title="before" entry={previous} />
-          <DiffPane title="after" entry={current} />
+          <DiffPane title={t("history.diffBefore")} entry={previous} />
+          <DiffPane title={t("history.diffAfter")} entry={current} />
         </div>
         <div className="border-t border-ink-100 bg-ink-50/60 px-4 py-3 text-[11px] text-ink-500">
-          full text diff lands with the version-content endpoint (M3). for
-          now, run{" "}
+          {t("history.diffFooter")}{" "}
           <code className="rounded bg-white px-1 py-0.5 font-mono text-ink-700">
             aitap diff {promptId}{" "}
             {previous ? `--from v${previous.version} ` : ""}--to v
             {current.version}
           </code>{" "}
-          to see the prompt body delta in your terminal.
+          {t("history.diffFooterEnd")}
         </div>
       </div>
     </div>
@@ -444,6 +469,7 @@ function DiffPane({
   title: string;
   entry: HistoryEntry | null;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="rounded-md border border-ink-100 bg-ink-50/40 p-3">
       <div className="mb-2 flex items-center gap-2">
@@ -459,24 +485,28 @@ function DiffPane({
           </>
         ) : (
           <span className="text-[11px] italic text-ink-400">
-            no earlier version
+            {t("history.noEarlierVersion")}
           </span>
         )}
       </div>
       {entry && (
         <dl className="space-y-1 text-[11px]">
-          <Row label="created">
+          <Row label={t("history.rowCreated")}>
             {new Date(entry.created_at).toLocaleString()}
           </Row>
-          <Row label="parent">
-            {entry.parent_version != null ? `v${entry.parent_version}` : "—"}
+          <Row label={t("history.rowParent")}>
+            {entry.parent_version != null
+              ? `v${entry.parent_version}`
+              : t("common.dash")}
           </Row>
-          <Row label="score">
+          <Row label={t("history.rowScore")}>
             {entry.avg_score != null
               ? `${(entry.avg_score * 100).toFixed(0)}%`
-              : "no score"}
+              : t("common.noScore")}
           </Row>
-          <Row label="note">{entry.note ?? "no note"}</Row>
+          <Row label={t("history.rowNote")}>
+            {entry.note ?? t("common.noNote")}
+          </Row>
         </dl>
       )}
     </div>
