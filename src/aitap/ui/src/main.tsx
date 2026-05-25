@@ -5,6 +5,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 
 import { queryClient } from "./api/client";
 import { router } from "./router";
+import "./i18n";
 import "./index.css";
 import "reactflow/dist/style.css";
 

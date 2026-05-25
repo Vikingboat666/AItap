@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 
 import { apiClient } from "../api/client";
 import type { PipelineSummary } from "../api/generated/models/PipelineSummary";
@@ -13,6 +14,7 @@ import { clsx } from "../lib/clsx";
 type Tab = "prompts" | "pipelines";
 
 export function Inventory() {
+  const { t } = useTranslation();
   const [tab, setTab] = useState<Tab>("prompts");
   const promptsQ = useQuery({
     queryKey: ["prompts"],
@@ -28,13 +30,13 @@ export function Inventory() {
       <div className="flex items-center gap-2">
         <TabButton
           active={tab === "prompts"}
-          label="prompts"
+          label={t("inventory.tabPrompts")}
           count={promptsQ.data?.prompts.length}
           onClick={() => setTab("prompts")}
         />
         <TabButton
           active={tab === "pipelines"}
-          label="pipelines"
+          label={t("inventory.tabPipelines")}
           count={pipelinesQ.data?.pipelines.length}
           onClick={() => setTab("pipelines")}
         />
@@ -101,13 +103,14 @@ function PromptList({
   onRetry: () => void;
   prompts: PromptSummary[];
 }) {
+  const { t } = useTranslation();
   if (isLoading) {
-    return <ListSkeleton label="loading prompts…" rows={4} />;
+    return <ListSkeleton label={t("inventory.loadingPrompts")} rows={4} />;
   }
   if (isError) {
     return (
       <ErrorState
-        title="couldn't load prompts"
+        title={t("inventory.couldntLoadPrompts")}
         error={error}
         onRetry={onRetry}
       />
@@ -116,16 +119,16 @@ function PromptList({
   if (prompts.length === 0) {
     return (
       <EmptyState
-        title="no prompts yet"
-        hint="run `aitap scan` to discover prompts in this project"
+        title={t("inventory.noPromptsYet")}
+        hint={t("inventory.noPromptsHint")}
       />
     );
   }
   return (
     <Card>
       <CardHeader
-        title="discovered prompts"
-        subtitle="from the latest aitap scan"
+        title={t("inventory.discoveredPrompts")}
+        subtitle={t("inventory.discoveredPromptsSubtitle")}
       />
       <ul className="divide-y divide-ink-100">
         {prompts.map((p) => (
@@ -182,13 +185,14 @@ function PipelineList({
   onRetry: () => void;
   pipelines: PipelineSummary[];
 }) {
+  const { t } = useTranslation();
   if (isLoading) {
-    return <ListSkeleton label="loading pipelines…" rows={3} />;
+    return <ListSkeleton label={t("inventory.loadingPipelines")} rows={3} />;
   }
   if (isError) {
     return (
       <ErrorState
-        title="couldn't load pipelines"
+        title={t("inventory.couldntLoadPipelines")}
         error={error}
         onRetry={onRetry}
       />
@@ -197,16 +201,16 @@ function PipelineList({
   if (pipelines.length === 0) {
     return (
       <EmptyState
-        title="no pipelines yet"
-        hint="pipelines are discovered when prompts share data flow"
+        title={t("inventory.noPipelinesYet")}
+        hint={t("inventory.noPipelinesHint")}
       />
     );
   }
   return (
     <Card>
       <CardHeader
-        title="discovered pipelines"
-        subtitle="prompts connected by data flow"
+        title={t("inventory.discoveredPipelines")}
+        subtitle={t("inventory.discoveredPipelinesSubtitle")}
       />
       <ul className="divide-y divide-ink-100">
         {pipelines.map((p) => (
@@ -218,8 +222,12 @@ function PipelineList({
               <div>
                 <div className="text-sm font-medium text-ink-800">{p.name}</div>
                 <div className="mt-1 text-xs text-ink-500">
-                  {p.node_count} nodes · {p.edge_count} edges ·{" "}
-                  {p.entry_count} entry · {p.exit_count} exit
+                  {t("inventory.pipelineMeta", {
+                    nodes: p.node_count,
+                    edges: p.edge_count,
+                    entry: p.entry_count,
+                    exit: p.exit_count,
+                  })}
                 </div>
               </div>
               <span className="font-mono text-[11px] text-ink-400">{p.id}</span>

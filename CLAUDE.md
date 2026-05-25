@@ -17,6 +17,16 @@ A `pygrep` pre-commit hook (`no-hardcoded-local-paths` in `.pre-commit-config.ya
 
 Ask the user before committing it. The repo is public; reverting a leak after push requires `git filter-repo` and breaks every existing PR/commit URL.
 
+## Internationalization (i18n) — non-negotiable
+
+The Web UI ships in **both English and 简体中文**. Every future UI change must keep both in sync — there is no English-only or Chinese-only feature.
+
+- **No hardcoded user-facing strings** in `src/aitap/ui`. Every label, button, placeholder, title, empty-state, error/warning text, and `aria-label` goes through `react-i18next` (`const { t } = useTranslation()` → `t("area.key")`).
+- **Add every new key to BOTH** `src/aitap/ui/src/i18n/en.json` and `src/aitap/ui/src/i18n/zh.json`. The `i18n.parity.test.ts` test fails CI if the two locales' key sets differ or any value is blank.
+- **Do NOT translate** identifiers/data: prompt ids, provider/model names, file paths, wire enums (`node`/`segment`/`end_to_end`), version numbers, or API-returned values. Only static UI prose.
+- Use named interpolation (`t("k", { count })`) — never string concatenation that breaks translation.
+- Chinese should read naturally and keep technical terms (prompt, pipeline, token, …) consistent.
+
 ## Project structure / conventions
 
 See `CONTRACTS.md` for the cross-module contracts (frozen files), `CONTRIBUTING.md` for workflow, and `WORKTREES.md` for the parallel-worktree development pattern.

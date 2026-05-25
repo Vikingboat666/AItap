@@ -22,6 +22,7 @@
 
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 
 import { IterateService } from "../api/generated";
 import type { IterationView } from "../api/generated";
@@ -81,6 +82,7 @@ export interface IterationTimelineProps {
 }
 
 export function IterationTimeline({ promptId }: IterationTimelineProps) {
+  const { t } = useTranslation();
   const iterationsQ = useQuery<IterationView[]>({
     queryKey: ["iterations-by-prompt", promptId],
     queryFn: () =>
@@ -98,7 +100,10 @@ export function IterationTimeline({ promptId }: IterationTimelineProps) {
   if (iterationsQ.isLoading) {
     return (
       <Card aria-busy="true">
-        <CardHeader title="iteration sessions" subtitle="loading…" />
+        <CardHeader
+          title={t("iterationTimeline.sessions")}
+          subtitle={t("iterationTimeline.loading")}
+        />
         <div className="space-y-2 px-4 py-3">
           {[0, 1].map((i) => (
             <div
@@ -115,19 +120,19 @@ export function IterationTimeline({ promptId }: IterationTimelineProps) {
     return (
       <Card className="space-y-3 p-4">
         <div className="text-sm font-medium text-rose-700">
-          failed to load iteration sessions
+          {t("iterationTimeline.failedToLoad")}
         </div>
         <div className="text-xs text-ink-500">
           {iterationsQ.error instanceof Error
             ? iterationsQ.error.message
-            : "unknown error"}
+            : t("common.unknownError")}
         </div>
         <button
           type="button"
           onClick={() => iterationsQ.refetch()}
           className="rounded-md bg-brand-600 px-3 py-1 text-xs font-medium text-white hover:bg-brand-700"
         >
-          retry
+          {t("common.retry")}
         </button>
       </Card>
     );
@@ -136,17 +141,16 @@ export function IterationTimeline({ promptId }: IterationTimelineProps) {
   return (
     <Card>
       <CardHeader
-        title="iteration sessions"
+        title={t("iterationTimeline.sessions")}
         subtitle={
           groups.length === 0
-            ? "no sessions recorded yet"
-            : `${groups.length} session${groups.length === 1 ? "" : "s"}`
+            ? t("iterationTimeline.noSessionsYet")
+            : t("iterationTimeline.sessionsCount", { count: groups.length })
         }
       />
       {groups.length === 0 ? (
         <div className="px-4 py-6 text-xs italic text-ink-400">
-          start an auto-iterate session from the playground to populate this
-          timeline.
+          {t("iterationTimeline.emptyHint")}
         </div>
       ) : (
         <ul className="divide-y divide-ink-100">
@@ -159,7 +163,14 @@ export function IterationTimeline({ promptId }: IterationTimelineProps) {
   );
 }
 
+const STATUS_LABEL_KEY: Record<SessionGroup["status"], string> = {
+  running: "iterationProgress.statusRunning",
+  converged: "iterationProgress.statusConverged",
+  failed: "iterationProgress.statusFailed",
+};
+
 function SessionRow({ group }: { group: SessionGroup }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   // Match the IterationProgress tone scheme: failed sessions get the
   // rose `err` palette so the inline status badge agrees visually with
@@ -183,19 +194,22 @@ function SessionRow({ group }: { group: SessionGroup }) {
             <span className="font-mono text-[11px] text-ink-700">
               {group.sessionId.slice(0, 10)}…
             </span>
-            <Badge tone={tone}>{group.status}</Badge>
+            <Badge tone={tone}>{t(STATUS_LABEL_KEY[group.status])}</Badge>
             {group.convergedReason && (
               <Badge tone="neutral">{group.convergedReason}</Badge>
             )}
           </div>
           <div className="mt-1 text-[11px] text-ink-500">
-            started {new Date(group.startedAt).toLocaleString()} ·{" "}
-            {group.rounds.length} round
-            {group.rounds.length === 1 ? "" : "s"}
+            {t("iterationTimeline.startedMeta", {
+              date: new Date(group.startedAt).toLocaleString(),
+              count: group.rounds.length,
+            })}
             {group.finalVersion != null && (
               <>
                 {" "}
-                · final v{group.finalVersion}
+                {t("iterationTimeline.finalVersion", {
+                  version: group.finalVersion,
+                })}
               </>
             )}
           </div>
@@ -226,6 +240,7 @@ function SessionRow({ group }: { group: SessionGroup }) {
 }
 
 function SessionRoundsChart({ rounds }: { rounds: IterationView[] }) {
+  const { t } = useTranslation();
   const width = 480;
   const height = 120;
   const padX = 28;
@@ -241,7 +256,7 @@ function SessionRoundsChart({ rounds }: { rounds: IterationView[] }) {
     <svg
       viewBox={`0 0 ${width} ${height}`}
       role="img"
-      aria-label="weighted score per round for this session"
+      aria-label={t("iterationTimeline.chartLabel")}
       className="w-full"
     >
       <line
@@ -270,8 +285,12 @@ function SessionRoundsChart({ rounds }: { rounds: IterationView[] }) {
               }
             >
               <title>
-                round {it.round} — {(score * 100).toFixed(0)}%
-                {it.is_baseline ? " (baseline)" : ""}
+                {t(
+                  it.is_baseline
+                    ? "iterationTimeline.barTitleBaseline"
+                    : "iterationTimeline.barTitle",
+                  { round: it.round, score: `${(score * 100).toFixed(0)}%` },
+                )}
               </title>
             </rect>
             <text
@@ -290,6 +309,7 @@ function SessionRoundsChart({ rounds }: { rounds: IterationView[] }) {
 }
 
 function RoundsList({ rounds }: { rounds: IterationView[] }) {
+  const { t } = useTranslation();
   return (
     <ul className="divide-y divide-ink-100 rounded-md border border-ink-100">
       {rounds.map((it) => (
@@ -298,9 +318,13 @@ function RoundsList({ rounds }: { rounds: IterationView[] }) {
           className="flex items-center justify-between gap-3 px-3 py-2 text-[11px]"
         >
           <div>
-            <span className="font-mono text-ink-700">round {it.round}</span>
+            <span className="font-mono text-ink-700">
+              {t("iterationTimeline.round", { round: it.round })}
+            </span>
             {it.is_baseline && (
-              <span className="ml-2 text-ink-500">baseline</span>
+              <span className="ml-2 text-ink-500">
+                {t("iterationTimeline.baseline")}
+              </span>
             )}
             {it.revise_mode && !it.is_baseline && (
               <span className="ml-2 text-ink-500">{it.revise_mode}</span>

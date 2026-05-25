@@ -29,6 +29,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 
 import { IterateService } from "../api/generated";
 import type {
@@ -47,45 +49,51 @@ import { clsx } from "../lib/clsx";
 export const DEFAULT_POLL_INTERVAL_MS = 1500;
 
 /**
- * Copy + tone for the five `converged_reason` enums. Centralising the
- * mapping here means a future spec rename (or a new reason) is a single
- * edit; the rest of the file just looks up by key.
+ * Tone + i18n keys for the five `converged_reason` enums. Centralising
+ * the mapping here means a future spec rename (or a new reason) is a
+ * single edit; the rest of the file looks up by key and resolves the copy
+ * with `t` at render time. `reasonCopy(reason, t)` returns the resolved
+ * `{ title, detail, tone }` (or `undefined` for an unknown reason).
  */
-const REASON_COPY: Record<
+const REASON_META: Record<
   string,
-  { title: string; detail: string; tone: "ok" | "warn" | "err" }
+  { titleKey: string; detailKey: string; tone: "ok" | "warn" | "err" }
 > = {
   delta: {
-    title: "score improved past the delta threshold",
-    detail:
-      "weighted score rose above baseline by the configured delta — the iteration succeeded.",
+    titleKey: "iterationProgress.reasonDeltaTitle",
+    detailKey: "iterationProgress.reasonDeltaDetail",
     tone: "ok",
   },
   absolute: {
-    title: "absolute threshold reached",
-    detail:
-      "an opt-in non-negotiable dimension (e.g. safety) cleared its absolute bar.",
+    titleKey: "iterationProgress.reasonAbsoluteTitle",
+    detailKey: "iterationProgress.reasonAbsoluteDetail",
     tone: "ok",
   },
   stagnation: {
-    title: "score plateaued",
-    detail:
-      "round-over-round delta dropped below the stagnation epsilon — further rounds unlikely to help.",
+    titleKey: "iterationProgress.reasonStagnationTitle",
+    detailKey: "iterationProgress.reasonStagnationDetail",
     tone: "warn",
   },
   max_rounds: {
-    title: "max rounds reached",
-    detail:
-      "the loop ran the configured number of rounds without crossing the delta threshold.",
+    titleKey: "iterationProgress.reasonMaxRoundsTitle",
+    detailKey: "iterationProgress.reasonMaxRoundsDetail",
     tone: "warn",
   },
   critic_failed: {
-    title: "the critic failed",
-    detail:
-      "the rewriter LLM call could not produce a valid revision — see critique text below for the failure detail.",
+    titleKey: "iterationProgress.reasonCriticFailedTitle",
+    detailKey: "iterationProgress.reasonCriticFailedDetail",
     tone: "err",
   },
 };
+
+function reasonCopy(
+  reason: string,
+  t: TFunction,
+): { title: string; detail: string; tone: "ok" | "warn" | "err" } | undefined {
+  const meta = REASON_META[reason];
+  if (!meta) return undefined;
+  return { title: t(meta.titleKey), detail: t(meta.detailKey), tone: meta.tone };
+}
 
 export interface IterationProgressProps {
   sessionId: string;
@@ -195,7 +203,7 @@ export function IterationProgress({
 
       {status !== "failed" &&
         sessionQ.data?.converged_reason &&
-        REASON_COPY[sessionQ.data.converged_reason] && (
+        REASON_META[sessionQ.data.converged_reason] && (
           <ConvergedSummary reason={sessionQ.data.converged_reason} />
         )}
 
@@ -245,26 +253,31 @@ function ProgressHeader({
   finalVersion,
   convergedReason,
 }: ProgressHeaderProps) {
+  const { t } = useTranslation();
   let subtitle: string;
   if (status === "running") {
-    subtitle = `round ${currentRound || 1} of ${maxRounds} — running…`;
+    subtitle = t("iterationProgress.subtitleRunning", {
+      round: currentRound || 1,
+      maxRounds,
+    });
   } else if (status === "converged") {
-    subtitle = `${currentRound} round${currentRound === 1 ? "" : "s"} · ${
-      convergedReason ?? "converged"
-    }`;
+    subtitle = t("iterationProgress.subtitleConverged", {
+      count: currentRound,
+      reason: convergedReason ?? t("iterationProgress.convergedFallback"),
+    });
   } else {
-    subtitle = "session failed — see error detail below";
+    subtitle = t("iterationProgress.subtitleFailed");
   }
 
   return (
     <Card>
       <CardHeader
-        title="auto-iterate"
+        title={t("iterationProgress.title")}
         subtitle={subtitle}
         action={
           <div className="flex items-center gap-2">
             {status === "running" && (
-              <Spinner aria-label="iteration in progress" />
+              <Spinner aria-label={t("iterationProgress.inProgress")} />
             )}
             <StatusBadge status={status} />
             {finalVersion != null && (
@@ -282,12 +295,15 @@ function StatusBadge({
 }: {
   status: IterateSessionResponse["status"];
 }) {
-  if (status === "running") return <Badge tone="warn">running</Badge>;
-  if (status === "converged") return <Badge tone="ok">converged</Badge>;
+  const { t } = useTranslation();
+  if (status === "running")
+    return <Badge tone="warn">{t("iterationProgress.statusRunning")}</Badge>;
+  if (status === "converged")
+    return <Badge tone="ok">{t("iterationProgress.statusConverged")}</Badge>;
   // Use the rose `err` tone so the inline badge matches the rose
   // FailureBanner's severity — previously we rendered amber/warn here
   // while the banner was rose, giving conflicting affordances.
-  return <Badge tone="err">failed</Badge>;
+  return <Badge tone="err">{t("iterationProgress.statusFailed")}</Badge>;
 }
 
 function Spinner({ "aria-label": label }: { "aria-label": string }) {
@@ -306,7 +322,8 @@ interface FailureBannerProps {
 }
 
 function FailureBanner({ critique, reason }: FailureBannerProps) {
-  const copy = REASON_COPY[reason] ?? REASON_COPY.critic_failed;
+  const { t } = useTranslation();
+  const copy = reasonCopy(reason, t) ?? reasonCopy("critic_failed", t)!;
   return (
     <Card
       role="alert"
@@ -327,7 +344,8 @@ function FailureBanner({ critique, reason }: FailureBannerProps) {
 }
 
 function ConvergedSummary({ reason }: { reason: string }) {
-  const copy = REASON_COPY[reason];
+  const { t } = useTranslation();
+  const copy = reasonCopy(reason, t);
   if (!copy) return null;
   const tone =
     copy.tone === "ok"
@@ -355,12 +373,13 @@ interface IterationBarsProps {
  * generic.
  */
 function IterationBars({ iterations }: IterationBarsProps) {
+  const { t } = useTranslation();
   if (iterations.length === 0) {
     return (
       <Card>
-        <CardHeader title="rounds" />
+        <CardHeader title={t("iterationProgress.rounds")} />
         <div className="px-4 py-3 text-xs italic text-ink-400">
-          waiting for the first round to land…
+          {t("iterationProgress.waitingFirstRound")}
         </div>
       </Card>
     );
@@ -382,16 +401,16 @@ function IterationBars({ iterations }: IterationBarsProps) {
   return (
     <Card>
       <CardHeader
-        title="round scores"
-        subtitle={`${iterations.length} round${
-          iterations.length === 1 ? "" : "s"
-        } recorded`}
+        title={t("iterationProgress.roundScores")}
+        subtitle={t("iterationProgress.roundScoresSubtitle", {
+          count: iterations.length,
+        })}
       />
       <div className="px-4 py-4">
         <svg
           viewBox={`0 0 ${width} ${height}`}
           role="img"
-          aria-label="weighted score per round"
+          aria-label={t("iterationProgress.chartLabel")}
           className="w-full"
           data-testid="iteration-bars"
         >
@@ -434,8 +453,15 @@ function IterationBars({ iterations }: IterationBarsProps) {
                   data-score={score}
                 >
                   <title>
-                    round {it.round} — {(score * 100).toFixed(0)}%
-                    {it.is_baseline ? " (baseline)" : ""}
+                    {t(
+                      it.is_baseline
+                        ? "iterationProgress.barTitleBaseline"
+                        : "iterationProgress.barTitle",
+                      {
+                        round: it.round,
+                        score: `${(score * 100).toFixed(0)}%`,
+                      },
+                    )}
                   </title>
                 </rect>
                 <text

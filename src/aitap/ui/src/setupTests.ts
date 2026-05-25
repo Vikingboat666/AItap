@@ -23,10 +23,19 @@ import { cleanup } from "@testing-library/react";
 import { setupServer } from "msw/node";
 
 import { handlers } from "./test-utils/handlers";
+import i18n from "./i18n";
 
 export const server = setupServer(...handlers);
 
-beforeAll(() => {
+beforeAll(async () => {
+  // The ~24 legacy component tests assert on the English copy that used
+  // to be hardcoded. The browser language detector could otherwise pick
+  // up a Chinese `navigator.language` (or a stale localStorage value) and
+  // flip the suite to zh, breaking every one of those assertions. Pin the
+  // shared singleton to English before any test renders; tests that
+  // exercise the switcher opt back into a locale and restore "en" after.
+  await i18n.changeLanguage("en");
+
   server.listen({ onUnhandledRequest: "error" });
 
   // MSW's `server.listen()` replaces `globalThis.fetch` with a proxy
@@ -55,9 +64,21 @@ beforeAll(() => {
   }
 });
 
-afterEach(() => {
+afterEach(async () => {
   cleanup();
   server.resetHandlers();
+  // Belt-and-suspenders: any test that switched the locale (the
+  // LanguageSwitcher suite) restores "en" itself, but reset here too so a
+  // forgotten restore can never bleed a Chinese language into the next
+  // English-asserting test.
+  if (i18n.language !== "en") {
+    await i18n.changeLanguage("en");
+  }
+  // The detector caches the picked language in localStorage; clear it so a
+  // persisted "zh" from a switcher test doesn't survive into later runs.
+  if (typeof localStorage !== "undefined") {
+    localStorage.removeItem("i18nextLng");
+  }
 });
 
 afterAll(() => {

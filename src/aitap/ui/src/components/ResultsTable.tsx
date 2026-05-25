@@ -21,6 +21,7 @@
  */
 
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { Badge, Card, CardHeader } from "./primitives";
 import { clsx } from "../lib/clsx";
@@ -56,25 +57,28 @@ export function ResultsTable({
   ratingByCase,
   onFeedback,
   feedbackDisabled = false,
-  title = "results",
+  title,
   subtitle,
-  emptyHint = "no results yet — run something to populate this table",
+  emptyHint,
 }: ResultsTableProps) {
+  const { t } = useTranslation();
   return (
     <Card>
       <CardHeader
-        title={title}
+        title={title ?? t("results.defaultTitle")}
         subtitle={subtitle}
         action={
           costUsd != null ? (
-            <Badge tone="neutral">cost ${costUsd.toFixed(4)}</Badge>
+            <Badge tone="neutral">
+              {t("results.cost", { amount: costUsd.toFixed(4) })}
+            </Badge>
           ) : null
         }
       />
       <div className="px-4 py-3">
         {outputs.length === 0 ? (
           <div className="rounded-md border border-dashed border-ink-200 px-3 py-6 text-center text-xs italic text-ink-400">
-            {emptyHint}
+            {emptyHint ?? t("results.defaultEmptyHint")}
           </div>
         ) : (
           <ul className="space-y-3">
@@ -107,6 +111,7 @@ function ResultRow({
   onFeedback,
   feedbackDisabled,
 }: ResultRowProps) {
+  const { t } = useTranslation();
   const [critiqueDraft, setCritiqueDraft] = useState("");
   const [critiqueOpen, setCritiqueOpen] = useState(false);
 
@@ -123,11 +128,13 @@ function ResultRow({
       <div className="mb-1 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Badge tone={isErrored ? "warn" : "neutral"}>
-            case #{output.case_index}
+            {t("results.caseBadge", { index: output.case_index })}
           </Badge>
           {output.intermediate && (
             <span className="text-[11px] text-ink-500">
-              {Object.keys(output.intermediate).length} intermediate node(s)
+              {t("results.intermediateNodes", {
+                count: Object.keys(output.intermediate).length,
+              })}
             </span>
           )}
         </div>
@@ -150,7 +157,7 @@ function ResultRow({
       )}
       {output.image_path && (
         <div className="mt-2 font-mono text-[11px] text-ink-500">
-          image: {output.image_path}
+          {t("results.image", { path: output.image_path })}
         </div>
       )}
       {output.error && (
@@ -177,7 +184,7 @@ function ResultRow({
             value={critiqueDraft}
             onChange={(e) => setCritiqueDraft(e.target.value)}
             rows={3}
-            placeholder="what should have been different?"
+            placeholder={t("results.critiquePlaceholder")}
             className="w-full rounded-md border border-ink-200 px-2 py-1 font-mono text-xs focus:border-brand-500 focus:outline-none"
           />
           <button
@@ -185,7 +192,7 @@ function ResultRow({
             disabled={feedbackDisabled || !critiqueDraft.trim()}
             className="rounded-md bg-brand-600 px-2 py-1 text-[11px] font-medium text-white disabled:cursor-not-allowed disabled:bg-ink-200"
           >
-            submit critique
+            {t("results.submitCritique")}
           </button>
         </form>
       )}
@@ -210,6 +217,7 @@ function FeedbackButtons({
   onToggleCritique,
   critiqueOpen,
 }: FeedbackButtonsProps) {
+  const { t } = useTranslation();
   const baseBtn =
     "rounded-md px-2 py-1 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-50";
   return (
@@ -217,7 +225,7 @@ function FeedbackButtons({
       <button
         type="button"
         disabled={disabled}
-        aria-label="thumbs up"
+        aria-label={t("results.thumbsUp")}
         aria-pressed={rating === 1}
         onClick={() => onFeedback({ caseIndex, rating: rating === 1 ? null : 1 })}
         className={clsx(
@@ -227,12 +235,12 @@ function FeedbackButtons({
             : "bg-ink-100 text-ink-600 hover:bg-ink-200",
         )}
       >
-        +1
+        {t("results.plusOne")}
       </button>
       <button
         type="button"
         disabled={disabled}
-        aria-label="thumbs down"
+        aria-label={t("results.thumbsDown")}
         aria-pressed={rating === -1}
         onClick={() =>
           onFeedback({ caseIndex, rating: rating === -1 ? null : -1 })
@@ -244,7 +252,7 @@ function FeedbackButtons({
             : "bg-ink-100 text-ink-600 hover:bg-ink-200",
         )}
       >
-        -1
+        {t("results.minusOne")}
       </button>
       <button
         type="button"
@@ -256,7 +264,7 @@ function FeedbackButtons({
             : "bg-ink-100 text-ink-600 hover:bg-ink-200",
         )}
       >
-        critique
+        {t("results.critique")}
       </button>
     </div>
   );

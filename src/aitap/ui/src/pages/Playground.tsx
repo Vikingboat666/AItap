@@ -27,6 +27,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 
 import {
   PipelinesService,
@@ -110,6 +111,7 @@ const DEFAULT_DRAFTS: CaseDraft[] = [
 ];
 
 export function Playground() {
+  const { t } = useTranslation();
   const { targetKind, targetId } = useParams();
   const queryClient = useQueryClient();
 
@@ -230,16 +232,18 @@ export function Playground() {
   }, [selectedTarget, promptDetailQ.data]);
 
   const targetLabel = useMemo(() => {
-    if (!selectedTarget) return "no target selected";
+    if (!selectedTarget) return t("playground.noTargetSelected");
     if (selectedTarget.kind === "prompt") {
       const p = promptsQ.data?.prompts.find((x) => x.id === selectedTarget.id);
-      return p ? `prompt · ${p.name}` : `prompt · ${selectedTarget.id}`;
+      return t("playground.promptLabel", { name: p ? p.name : selectedTarget.id });
     }
     const p = pipelinesQ.data?.pipelines.find(
       (x) => x.id === selectedTarget.id,
     );
-    return p ? `pipeline · ${p.name}` : `pipeline · ${selectedTarget.id}`;
-  }, [selectedTarget, promptsQ.data, pipelinesQ.data]);
+    return t("playground.pipelineLabel", {
+      name: p ? p.name : selectedTarget.id,
+    });
+  }, [selectedTarget, promptsQ.data, pipelinesQ.data, t]);
 
   const { cases: parsedCases, hasErrors: caseHasErrors } = useMemo(
     () => parseCases(cases),
@@ -258,9 +262,9 @@ export function Playground() {
 
   const runMutation = useMutation({
     mutationFn: async () => {
-      if (!selectedTarget) throw new Error("no target selected");
+      if (!selectedTarget) throw new Error(t("playground.errorNoTarget"));
       if (parsedCases.length === 0) {
-        throw new Error("add at least one case");
+        throw new Error(t("playground.errorAddCase"));
       }
       const effectiveModel =
         model || settingsQ.data?.model || "gpt-4o-mini";
@@ -422,7 +426,7 @@ export function Playground() {
               : "cursor-not-allowed bg-ink-200",
           )}
         >
-          {runMutation.isPending ? "running…" : "run"}
+          {runMutation.isPending ? t("playground.running") : t("playground.run")}
         </button>
 
         {/*
@@ -447,11 +451,11 @@ export function Playground() {
           )}
           title={
             selectedTarget?.kind === "prompt"
-              ? "open the auto-iterate launch modal"
-              : "select a prompt target to enable auto-iterate"
+              ? t("playground.autoIterateEnabledTitle")
+              : t("playground.autoIterateDisabledTitle")
           }
         >
-          auto-iterate
+          {t("playground.autoIterate")}
         </button>
 
         {runMutation.error && (
@@ -463,7 +467,7 @@ export function Playground() {
                 onClick={() => runMutation.mutate()}
                 className="rounded-md bg-rose-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-rose-700"
               >
-                retry
+                {t("common.retry")}
               </button>
             </div>
           </Card>
@@ -474,32 +478,40 @@ export function Playground() {
         {isPipelineTarget && (mode === "node" || mode === "segment") && (
           <Card>
             <CardHeader
-              title={mode === "node" ? "pick a node" : "pick a segment"}
+              title={
+                mode === "node"
+                  ? t("playground.pickANode")
+                  : t("playground.pickASegment")
+              }
               subtitle={
                 mode === "node"
-                  ? "click one node to run it in isolation"
-                  : "click nodes to include; outputs flow along edges within the set"
+                  ? t("playground.pickANodeSubtitle")
+                  : t("playground.pickASegmentSubtitle")
               }
             />
             <div className="px-3 py-3">
               {pipelineDetailQ.isLoading ? (
-                <div className="text-xs text-ink-500">loading pipeline…</div>
+                <div className="text-xs text-ink-500">
+                  {t("pipeline.loading")}
+                </div>
               ) : pipelineDetailQ.data ? (
                 <>
                   <div className="mb-2 flex items-center gap-2 text-[11px]">
                     {pipelineSelection.length === 0 ? (
                       <Badge tone="warn">
                         {mode === "node"
-                          ? "select a node"
-                          : "select at least one node"}
+                          ? t("playground.selectANode")
+                          : t("playground.selectAtLeastOneNode")}
                       </Badge>
                     ) : (
                       <Badge tone="brand">
                         {mode === "node"
-                          ? `node: ${pipelineSelection[0]}`
-                          : `segment: ${pipelineSelection.length} node${
-                              pipelineSelection.length === 1 ? "" : "s"
-                            }`}
+                          ? t("playground.nodeBadge", {
+                              id: pipelineSelection[0],
+                            })
+                          : t("playground.segmentBadge", {
+                              count: pipelineSelection.length,
+                            })}
                       </Badge>
                     )}
                   </div>
@@ -514,13 +526,14 @@ export function Playground() {
                       role="alert"
                       className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-700"
                     >
-                      these nodes aren&apos;t connected — they&apos;ll run as
-                      independent groups
+                      {t("playground.notContiguous")}
                     </div>
                   )}
                 </>
               ) : (
-                <div className="text-xs text-ink-500">no pipeline data</div>
+                <div className="text-xs text-ink-500">
+                  {t("playground.noPipelineData")}
+                </div>
               )}
             </div>
           </Card>
@@ -539,8 +552,11 @@ export function Playground() {
           <ResultsTable
             outputs={activeRun.outputs}
             costUsd={activeRun.cost_usd}
-            title="run output"
-            subtitle={`run ${activeRun.run_id} · ${activeRun.status}`}
+            title={t("playground.runOutput")}
+            subtitle={t("playground.runOutputSubtitle", {
+              runId: activeRun.run_id,
+              status: activeRun.status,
+            })}
             ratingByCase={ratingByCase.data ?? {}}
             onFeedback={handleFeedback}
             feedbackDisabled={feedbackMutation.isPending}
@@ -548,7 +564,7 @@ export function Playground() {
         ) : (
           <ResultsTable
             outputs={[]}
-            emptyHint="pick a target, add cases, then hit run"
+            emptyHint={t("playground.emptyHint")}
           />
         )}
 
@@ -601,6 +617,12 @@ interface TargetCardProps {
   onModeChange: (m: Mode) => void;
 }
 
+const MODE_LABEL_KEY: Record<Mode, string> = {
+  node: "playground.modeNode",
+  segment: "playground.modeSegment",
+  "end-to-end": "playground.modeEndToEnd",
+};
+
 function TargetCard({
   targetLabel,
   selectedTarget,
@@ -612,18 +634,19 @@ function TargetCard({
   mode,
   onModeChange,
 }: TargetCardProps) {
+  const { t } = useTranslation();
   return (
     <Card>
-      <CardHeader title="target" />
+      <CardHeader title={t("playground.target")} />
       <div className="space-y-3 px-4 py-3">
         <div className="text-xs text-ink-500">{targetLabel}</div>
         <details className="text-xs" open={!selectedTarget}>
           <summary className="cursor-pointer text-ink-600 hover:text-ink-800">
-            pick a different target
+            {t("playground.pickDifferentTarget")}
           </summary>
           <div className="mt-2 space-y-3">
             <TargetList
-              title="prompts"
+              title={t("playground.prompts")}
               loading={promptsLoading}
               items={prompts}
               selectedId={selectedTarget?.id ?? null}
@@ -631,7 +654,7 @@ function TargetCard({
               kind="prompt"
             />
             <TargetList
-              title="pipelines"
+              title={t("playground.pipelines")}
               loading={pipelinesLoading}
               items={pipelines}
               selectedId={selectedTarget?.id ?? null}
@@ -644,7 +667,7 @@ function TargetCard({
         {selectedTarget?.kind === "pipeline" && (
           <div>
             <div className="mb-1 text-[11px] uppercase text-ink-400">
-              run mode
+              {t("playground.runMode")}
             </div>
             {/*
               All three modes are exposed now that the node-pick UI
@@ -666,7 +689,7 @@ function TargetCard({
                       : "bg-ink-100 text-ink-700 hover:bg-ink-200",
                   )}
                 >
-                  {m}
+                  {t(MODE_LABEL_KEY[m])}
                 </button>
               ))}
             </div>
@@ -692,16 +715,17 @@ function TargetList({
   onPick: (id: string) => void;
   kind: "prompt" | "pipeline";
 }) {
+  const { t } = useTranslation();
   return (
     <div>
       <div className="mb-1 text-[11px] uppercase text-ink-400">{title}</div>
       {loading ? (
         <div className="rounded-md border border-ink-200 px-2 py-2 text-[11px] text-ink-400">
-          loading {title}…
+          {t("playground.loadingList", { title })}
         </div>
       ) : items.length === 0 ? (
         <div className="rounded-md border border-dashed border-ink-200 px-2 py-2 text-[11px] italic text-ink-400">
-          none discovered
+          {t("playground.noneDiscovered")}
         </div>
       ) : (
         <ul className="max-h-40 overflow-auto rounded-md border border-ink-200">
@@ -740,10 +764,11 @@ function ModelControls({
   onTemperatureChange: (n: number) => void;
   providerHint?: string;
 }) {
+  const { t } = useTranslation();
   return (
     <Card>
       <CardHeader
-        title="model"
+        title={t("playground.model")}
         action={providerHint ? <Badge tone="brand">{providerHint}</Badge> : null}
       />
       <div className="space-y-3 px-4 py-3">
@@ -752,7 +777,7 @@ function ModelControls({
             htmlFor="model-input"
             className="mb-1 block text-[11px] uppercase text-ink-400"
           >
-            model
+            {t("playground.model")}
           </label>
           <input
             id="model-input"
@@ -768,7 +793,7 @@ function ModelControls({
             htmlFor="temperature-input"
             className="mb-1 block text-[11px] uppercase text-ink-400"
           >
-            temperature ({temperature.toFixed(2)})
+            {t("playground.temperature", { value: temperature.toFixed(2) })}
           </label>
           <input
             id="temperature-input"
@@ -787,9 +812,13 @@ function ModelControls({
 }
 
 function ResultsSkeleton() {
+  const { t } = useTranslation();
   return (
     <Card>
-      <CardHeader title="run output" subtitle="dispatching to backend…" />
+      <CardHeader
+        title={t("playground.runOutput")}
+        subtitle={t("playground.dispatching")}
+      />
       <div className="space-y-2 px-4 py-3">
         {[0, 1, 2].map((i) => (
           <div
@@ -799,7 +828,7 @@ function ResultsSkeleton() {
           />
         ))}
         <div className="text-xs italic text-ink-400">
-          this will keep the result table area reserved while the run completes
+          {t("playground.skeletonHint")}
         </div>
       </div>
     </Card>
@@ -813,18 +842,21 @@ function FeedbackToast({
   response: FeedbackResponse;
   onDismiss: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div
       role="status"
       className="flex items-center justify-between rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700"
     >
-      <span>feedback recorded (id #{response.feedback_id})</span>
+      <span>
+        {t("playground.feedbackRecorded", { id: response.feedback_id })}
+      </span>
       <button
         type="button"
         onClick={onDismiss}
         className="text-[11px] text-emerald-700 hover:text-emerald-900"
       >
-        dismiss
+        {t("common.dismiss")}
       </button>
     </div>
   );

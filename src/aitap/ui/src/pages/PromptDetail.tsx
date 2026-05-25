@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 
 import { apiClient } from "../api/client";
 import { Badge, Card, CardHeader } from "../components/primitives";
@@ -9,6 +10,7 @@ import { BlockSkeleton } from "../components/skeletons";
 import type { PromptVersionInfo } from "../api/generated/models/PromptVersionInfo";
 
 export function PromptDetail() {
+  const { t } = useTranslation();
   const { id = "" } = useParams();
   const [diffPair, setDiffPair] = useState<
     [PromptVersionInfo, PromptVersionInfo] | null
@@ -22,12 +24,12 @@ export function PromptDetail() {
   });
 
   if (q.isLoading) {
-    return <BlockSkeleton label="loading prompt…" />;
+    return <BlockSkeleton label={t("prompt.loading")} />;
   }
   if (q.isError) {
     return (
       <ErrorState
-        title="couldn't load prompt"
+        title={t("prompt.couldntLoad")}
         error={q.error}
         onRetry={() => void q.refetch()}
       />
@@ -37,7 +39,7 @@ export function PromptDetail() {
     // Loading is settled and no error — defensive empty state. Should
     // not happen with the contract types but keeps the component total.
     return (
-      <Card className="p-6 text-sm text-ink-500">no prompt data</Card>
+      <Card className="p-6 text-sm text-ink-500">{t("prompt.noData")}</Card>
     );
   }
   const { site, versions } = q.data;
@@ -65,13 +67,13 @@ export function PromptDetail() {
                   to={`/playground/prompt/${encodeURIComponent(site.id)}`}
                   className="rounded-md bg-brand-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-700"
                 >
-                  open in playground
+                  {t("prompt.openInPlayground")}
                 </Link>
                 <Link
                   to={`/history/${encodeURIComponent(site.id)}`}
                   className="rounded-md bg-ink-100 px-3 py-1.5 text-xs font-medium text-ink-700 hover:bg-ink-200"
                 >
-                  history
+                  {t("prompt.history")}
                 </Link>
               </div>
             }
@@ -79,25 +81,27 @@ export function PromptDetail() {
           <div className="px-4 py-3 text-xs text-ink-600">
             {site.purpose ?? (
               <span className="italic text-ink-400">
-                no purpose inferred (L2 not run)
+                {t("prompt.noPurpose")}
               </span>
             )}
           </div>
         </Card>
 
         <Card>
-          <CardHeader title="messages" />
+          <CardHeader title={t("prompt.messages")} />
           <ul className="divide-y divide-ink-100">
             {site.messages.map((m, i) => (
               <li key={i} className="px-4 py-3">
                 <div className="mb-2 flex items-center gap-2">
                   <Badge>{m.role}</Badge>
                   <span className="text-[11px] text-ink-400">
-                    {m.template_kind ?? "literal"}
+                    {m.template_kind ?? t("prompt.literal")}
                   </span>
                   {m.variables?.length ? (
                     <span className="text-[11px] text-ink-400">
-                      vars: {m.variables.map((v) => v.name).join(", ")}
+                      {t("prompt.vars", {
+                        names: m.variables.map((v) => v.name).join(", "),
+                      })}
                     </span>
                   ) : null}
                 </div>
@@ -112,7 +116,7 @@ export function PromptDetail() {
 
       <div className="space-y-4">
         <Card>
-          <CardHeader title="parameters" />
+          <CardHeader title={t("prompt.parameters")} />
           <dl className="grid grid-cols-2 gap-2 px-4 py-3 text-xs">
             {Object.entries(site.parameters ?? {})
               .filter(([, v]) => v !== null && v !== undefined)
@@ -154,6 +158,7 @@ function VersionsCard({
   versions: PromptVersionInfo[];
   onDiff: (a: PromptVersionInfo, b: PromptVersionInfo) => void;
 }) {
+  const { t } = useTranslation();
   // "Diff" needs two versions to be meaningful; offer compare-with-parent
   // when the row has a parent_version we can resolve, and silently disable
   // the button when there's nothing to compare against.
@@ -162,12 +167,12 @@ function VersionsCard({
   return (
     <Card>
       <CardHeader
-        title="versions"
-        subtitle={`${versions.length} recorded`}
+        title={t("prompt.versions")}
+        subtitle={t("prompt.versionsRecorded", { count: versions.length })}
       />
       {versions.length === 0 ? (
         <div className="px-4 py-3 text-xs italic text-ink-400">
-          no versions recorded yet — edit & save in the playground to create v1
+          {t("prompt.noVersionsYet")}
         </div>
       ) : (
         <ul className="divide-y divide-ink-100">
@@ -195,7 +200,7 @@ function VersionsCard({
                     </Badge>
                   </div>
                   <div className="mt-0.5 truncate text-ink-500">
-                    {v.note ?? "no note"}
+                    {v.note ?? t("common.noNote")}
                   </div>
                 </div>
                 <button
@@ -204,12 +209,17 @@ function VersionsCard({
                   onClick={() => parent && onDiff(parent, v)}
                   title={
                     parent
-                      ? `diff v${parent.version} vs v${v.version}`
-                      : "no parent version to diff against"
+                      ? t("prompt.diffTitle", {
+                          parent: parent.version,
+                          version: v.version,
+                        })
+                      : t("prompt.noParentToDiff")
                   }
                   className="ml-3 shrink-0 rounded-md bg-ink-100 px-2 py-1 font-mono text-[11px] text-ink-700 hover:bg-ink-200 disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  diff{parent ? ` v${parent.version}` : ""}
+                  {parent
+                    ? t("prompt.diffWithParent", { parent: parent.version })
+                    : t("prompt.diffLabel")}
                 </button>
               </li>
             );
@@ -217,7 +227,7 @@ function VersionsCard({
         </ul>
       )}
       <div className="border-t border-ink-100 px-4 py-2 text-[11px] text-ink-400">
-        prompt id: <span className="font-mono">{promptId}</span>
+        {t("prompt.promptId")} <span className="font-mono">{promptId}</span>
       </div>
     </Card>
   );
@@ -232,6 +242,7 @@ function DiffPlaceholderModal({
   pair: [PromptVersionInfo, PromptVersionInfo];
   onClose: () => void;
 }) {
+  const { t } = useTranslation();
   // Real side-by-side diff is a follow-up (M4). For now we direct users
   // to the CLI which already renders a unified diff for any two versions.
   const [a, b] = pair;
@@ -248,12 +259,10 @@ function DiffPlaceholderModal({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="text-sm font-semibold text-ink-800">
-          diff v{a.version} ↔ v{b.version}
+          {t("prompt.diffHeading", { a: a.version, b: b.version })}
         </div>
         <p className="text-xs text-ink-600">
-          A graphical diff view is on the M4 roadmap. For now, run the
-          CLI command below to see a unified diff of every message and
-          parameter change between these two versions:
+          {t("prompt.diffBody")}
         </p>
         <pre className="overflow-x-auto rounded-md bg-ink-50 px-3 py-2 font-mono text-xs text-ink-800">
           {cliHint}
@@ -264,7 +273,7 @@ function DiffPlaceholderModal({
             onClick={onClose}
             className="rounded-md bg-ink-100 px-3 py-1.5 text-xs font-medium text-ink-700 hover:bg-ink-200"
           >
-            close
+            {t("common.close")}
           </button>
         </div>
       </Card>
