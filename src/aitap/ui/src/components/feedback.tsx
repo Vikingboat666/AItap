@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 
 import { formatError } from "../api/format-error";
 import { Card } from "./primitives";
@@ -19,6 +20,7 @@ export function ErrorState({
   error: unknown;
   onRetry?: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <Card className="space-y-3 p-6" role="alert">
       <div className="text-sm font-semibold text-rose-700">{title}</div>
@@ -31,7 +33,7 @@ export function ErrorState({
           onClick={onRetry}
           className="rounded-md bg-brand-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-700"
         >
-          retry
+          {t("common.retry")}
         </button>
       )}
     </Card>
