@@ -297,6 +297,12 @@ class SetKeyRequest(_ApiModel):
 
     provider: Literal["anthropic", "openai"]
     key: str = Field(min_length=1)
+    # When False (the default), the route persists via the OS keyring and
+    # 409s the request if the keyring is unusable. The UI then shows a
+    # "your keychain isn't available — save to a file instead?" confirm
+    # dialog and re-POSTs with use_fallback=True. This keeps the silent
+    # fallback path the security model forbids out of the contract.
+    use_fallback: bool = False
 
 
 class TestKeyResponse(_ApiModel):

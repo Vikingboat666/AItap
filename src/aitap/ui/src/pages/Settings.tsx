@@ -32,6 +32,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
 import { apiClient } from "../api/client";
+import { ApiError } from "../api/generated";
 import type { SettingsResponse } from "../api/generated/models/SettingsResponse";
 import { Badge, Card, CardHeader, EmptyState } from "../components/primitives";
 import { ErrorState } from "../components/feedback";
@@ -142,20 +143,42 @@ function ProviderCard({
     text: string;
   } | null>(null);
   const [testResult, setTestResult] = useState<TestKeyResponse | null>(null);
+  // When the backend responds 409 (OS keyring unreachable on this
+  // machine), we show an explicit confirmation before falling back to
+  // the local file — silent fallback would violate the security model.
+  const [fallbackOpen, setFallbackOpen] = useState(false);
 
-  async function handleSave() {
+  async function handleSave(useFallback = false): Promise<void> {
     if (!typedKey.trim()) return;
     setSaveBusy(true);
     setFeedback(null);
     try {
-      await saveProviderKey({ provider, key: typedKey });
+      await saveProviderKey({
+        provider,
+        key: typedKey,
+        use_fallback: useFallback,
+      });
       // SECURITY: clear the typed key from React state the instant the
       // save returns. Only the masked preview remains, from the refetch.
       setTypedKey("");
+      setFallbackOpen(false);
       setFeedback({ tone: "ok", text: t("settings.saveSuccess") });
       await queryClient.invalidateQueries({ queryKey: ["settings"] });
       onChanged();
     } catch (err) {
+      // The OS keyring is unreachable on this machine and the user
+      // hasn't opted into the file fallback yet. Surface a confirm
+      // dialog rather than a silent file-write. The typed key stays in
+      // React state until the user picks Cancel or Save-to-file; on
+      // cancel they can clear it manually by editing the field.
+      if (
+        !useFallback &&
+        err instanceof ApiError &&
+        err.status === 409
+      ) {
+        setFallbackOpen(true);
+        return;
+      }
       const message =
         err instanceof Error ? err.message : t("settings.saveFailure");
       setFeedback({ tone: "err", text: message });
@@ -314,8 +337,45 @@ function ProviderCard({
           >
             {testResult.detail ??
               (testResult.ok
-                ? t("settings.testOk", { detail: "" })
-                : t("settings.testFail", { detail: "" }))}
+                ? t("settings.testOk")
+                : t("settings.testFail"))}
+          </div>
+        )}
+
+        {fallbackOpen && (
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={`fb-title-${provider}`}
+            className="rounded-md border border-amber-300 bg-amber-50 px-3 py-3 text-xs text-amber-900"
+          >
+            <div
+              id={`fb-title-${provider}`}
+              className="mb-1 font-semibold"
+            >
+              {t("settings.fallbackConfirmTitle")}
+            </div>
+            <div className="mb-2">
+              {t("settings.fallbackConfirmBody")}
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => void handleSave(true)}
+                disabled={saveBusy}
+                className="rounded-md bg-amber-700 px-3 py-1 text-[11px] font-medium text-white disabled:opacity-60"
+              >
+                {t("settings.fallbackConfirmYes")}
+              </button>
+              <button
+                type="button"
+                onClick={() => setFallbackOpen(false)}
+                disabled={saveBusy}
+                className="rounded-md border border-amber-400 bg-white px-3 py-1 text-[11px] font-medium text-amber-900 disabled:opacity-60"
+              >
+                {t("settings.fallbackConfirmNo")}
+              </button>
+            </div>
           </div>
         )}
       </div>

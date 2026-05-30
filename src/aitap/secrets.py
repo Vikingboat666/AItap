@@ -303,18 +303,40 @@ def get_key(provider: Provider) -> str | None:
     return None
 
 
+class KeyringUnavailableError(RuntimeError):
+    """Raised by :func:`set_key` when the OS keyring isn't usable and the
+    caller hasn't opted into the file fallback.
+
+    The design contract (``docs/settings-ui-design.md`` → Security model)
+    is explicit: aitap never silently writes a key to ``~/.aitap/secrets.yaml``.
+    The user must see a "your keychain isn't available — save to a file
+    instead?" confirmation and re-submit with ``use_fallback=True``.
+
+    Carries no key material; the message is plain-language and safe to
+    surface verbatim to the user.
+    """
+
+
 def set_key(provider: Provider, key: str, *, use_fallback: bool = False) -> KeyStatus:
     """Persist *key* for *provider*.
 
     Args:
         provider: which provider this key is for.
         key: the raw secret — never logged, never echoed back.
-        use_fallback: when True, write to ``~/.aitap/secrets.yaml``
-            regardless of whether the keyring backend is usable. The UI
-            should only set this after asking the user to confirm; the
-            backend default (``False``) picks the keyring whenever it's
-            healthy. We still honour the explicit opt-in so a user who
-            wants the file path can take it.
+        use_fallback: when True, write to ``~/.aitap/secrets.yaml``. The
+            UI should only set this after explicitly asking the user to
+            confirm (the API layer surfaces a 409 + dialog when the
+            keyring is down so the user makes that choice consciously).
+
+    Behaviour:
+        - ``use_fallback=False`` (default) AND keyring healthy → writes
+          to keyring, returns ``source="keyring"``.
+        - ``use_fallback=False`` AND keyring unusable / write fails →
+          raises :class:`KeyringUnavailableError`. **No file is touched.**
+          This is the contract: a silent fallback would let a key land on
+          disk without the user knowing, which the security model forbids.
+        - ``use_fallback=True`` → writes to ``~/.aitap/secrets.yaml``
+          regardless of keyring health. Honours an explicit opt-in.
 
     Returns the post-write :class:`KeyStatus` so callers don't need a
     second :func:`key_status` round-trip.
@@ -323,23 +345,32 @@ def set_key(provider: Provider, key: str, *, use_fallback: bool = False) -> KeyS
     if not key or not key.strip():
         raise ValueError("API key cannot be empty")
 
-    if not use_fallback and _keyring_usable():
+    if not use_fallback:
+        if not _keyring_usable():
+            raise KeyringUnavailableError("Aitap can't reach your system keychain on this machine.")
         keyring = _keyring_module()
         try:
             keyring.set_password(_KEYRING_SERVICE, _account(provider), key)  # type: ignore[attr-defined]
-            return KeyStatus(
-                provider=provider,
-                configured=True,
-                source="keyring",
-                masked=_mask(key),
-            )
-        except Exception:
-            # If the keyring write blows up at runtime (Linux SecretService
-            # daemon died, etc.) fall through to the fallback path so the
-            # user isn't stuck. The API layer will surface the source as
-            # "fallback" so the UI can warn.
-            pass
+        except Exception as exc:
+            # Keyring write blew up at runtime (SecretService daemon
+            # died, Keychain locked, etc.). Surface as the same error
+            # the not-usable case raises — no silent file write. The
+            # caller (API layer) maps this to a 409 + UI confirmation
+            # dialog; on confirm the UI re-POSTs with use_fallback=True.
+            # We deliberately don't embed ``str(exc)``: it's not
+            # user-actionable and would leak into the response body if a
+            # caller forwarded the message blindly.
+            raise KeyringUnavailableError(
+                "Aitap couldn't write the key to your system keychain."
+            ) from exc
+        return KeyStatus(
+            provider=provider,
+            configured=True,
+            source="keyring",
+            masked=_mask(key),
+        )
 
+    # use_fallback=True: the user has explicitly opted in.
     fallback = _read_fallback()
     fallback[provider] = key
     _write_fallback(fallback)
@@ -498,6 +529,7 @@ def install_log_filter(target_logger: logging.Logger | None = None) -> _SecretLo
 __all__ = [
     "KeySource",
     "KeyStatus",
+    "KeyringUnavailableError",
     "Provider",
     "delete_key",
     "get_key",

@@ -71,6 +71,27 @@ _TEST_OTHER_DETAIL = (
     "happening, capture the timestamp and contact your admin."
 )
 _TEST_NO_KEY_DETAIL = "No {provider} key is set. Add one in Settings before testing."
+_TEST_SDK_MISSING_DETAIL = (
+    # NOTE: deliberately static — never interpolate the wrapped
+    # ``ProviderError.__str__`` into the API body. SDK exception strings
+    # have historically embedded request payloads (including auth headers)
+    # on 4xx; we do not give them a wire path out of the server.
+    "Aitap can't talk to {provider} on this machine. The provider SDK may not "
+    "be installed — try `pip install 'aitap[{slug}]'`."
+)
+
+# Display names for use in user-facing copy. ``"openai".title()`` produces
+# ``"Openai"``, which reads like a typo. The map keeps the canonical
+# capitalisations consistent across the CLI, API, and UI.
+_PRETTY_PROVIDER_NAMES: dict[str, str] = {
+    "anthropic": "Anthropic",
+    "openai": "OpenAI",
+}
+
+
+def _pretty_provider(provider: str) -> str:
+    """Return ``provider`` in its canonical display form (e.g. ``OpenAI``)."""
+    return _PRETTY_PROVIDER_NAMES.get(provider, provider)
 
 
 # In-memory override store. Keyed by attribute name -> new value. Wiping the
@@ -141,12 +162,32 @@ def set_provider_key(payload: SetKeyRequest) -> ProviderKeyStatus:
     the returned masked preview.
     """
     try:
-        status = secrets_module.set_key(payload.provider, payload.key)
+        status = secrets_module.set_key(
+            payload.provider,
+            payload.key,
+            use_fallback=payload.use_fallback,
+        )
     except ValueError as exc:
         # Plain-language remediation, no stack trace, no key.
         raise HTTPException(
             status_code=400,
             detail=str(exc),
+        ) from None
+    except secrets_module.KeyringUnavailableError:
+        # The OS keyring isn't usable on this machine (no Secret Service
+        # daemon, locked Keychain, etc.). The user hasn't opted into the
+        # file fallback yet; surface a 409 so the UI can show a confirm
+        # dialog and re-POST with use_fallback=True. The detail is a
+        # complete, plain-language sentence — no stack trace, no key,
+        # and crucially no internal exception message that could change
+        # across keyring versions.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Aitap can't reach your system keychain on this machine. "
+                "Save the key to a file in your home folder instead? "
+                "It will be readable only by you."
+            ),
         ) from None
     return _to_api_key_status(status)
 
@@ -201,7 +242,7 @@ async def test_provider_key(provider: str) -> TestKeyResponse:
         return TestKeyResponse(
             ok=False,
             reason="auth",
-            detail=_TEST_NO_KEY_DETAIL.format(provider=provider.title()),
+            detail=_TEST_NO_KEY_DETAIL.format(provider=_pretty_provider(provider)),
         )
 
     return await _run_connectivity_probe(provider)
@@ -503,18 +544,22 @@ async def _run_connectivity_probe(provider: str) -> TestKeyResponse:
         "openai": "gpt-4o-mini",
     }
     model = probe_models.get(provider, "unknown")
-    pretty = provider.title()
+    pretty = _pretty_provider(provider)
 
     try:
         client = get_client(provider, model)
-    except ProviderError as exc:
-        # Most likely "install the SDK". Surface as "other" with a
-        # short remediation hint; the message stays generic to avoid
-        # leaking SDK internals.
+    except ProviderError:
+        # Most likely "install the SDK". We deliberately do NOT interpolate
+        # the wrapped exception string into the response — historically
+        # provider SDKs have embedded request payloads (including auth
+        # headers) into their exception messages on 4xx responses. The
+        # detail stays static; the actual cause goes to the logs (the
+        # secret log filter strips any leaked key from the traceback).
+        _LOGGER.warning("probe for %s failed at client construction", provider, exc_info=True)
         return TestKeyResponse(
             ok=False,
             reason="other",
-            detail=f"Aitap can't talk to {pretty} on this machine. {exc}",
+            detail=_TEST_SDK_MISSING_DETAIL.format(provider=pretty, slug=provider),
         )
 
     try:
@@ -545,10 +590,10 @@ async def _run_connectivity_probe(provider: str) -> TestKeyResponse:
         )
     except Exception:
         # Final safety net so a bad SDK upgrade doesn't blow up the
-        # route. We deliberately do **not** log the exception's repr
-        # — the secret log filter would catch a leaked key but we'd
-        # rather not depend on it for the happy path.
-        _LOGGER.warning("probe for %s failed with unexpected error", provider)
+        # route. We log with ``exc_info=True`` so the cause is at least
+        # debuggable; the secret log filter strips any leaked key from
+        # the formatted traceback before it reaches an output handler.
+        _LOGGER.warning("probe for %s failed with unexpected error", provider, exc_info=True)
         return TestKeyResponse(
             ok=False,
             reason="other",

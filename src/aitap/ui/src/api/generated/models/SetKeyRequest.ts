@@ -13,5 +13,6 @@
 export type SetKeyRequest = {
     key: string;
     provider: 'anthropic' | 'openai';
+    use_fallback?: boolean;
 };
 

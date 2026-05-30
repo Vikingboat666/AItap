@@ -345,14 +345,18 @@
     "saveFailure": "保存失败，请重试。",
     "clearSuccess": "密钥已删除。",
     "clearFailure": "删除失败，请重试。",
-    "testOk": "{{detail}}",
-    "testFail": "{{detail}}",
+    "testOk": "测试通过。",
+    "testFail": "测试失败。可到「设置」里重试。",
     "lastTested": "最近测试 {{when}}",
     "noKeyHint": "未配置密钥——需要 {{provider}} 的运行将被跳过。",
     "sourceKeyring": "系统钥匙串",
     "sourceFallback": "回退文件",
     "sourceEnv": "环境变量",
-    "sourceNone": "尚未设置"
+    "sourceNone": "尚未设置",
+    "fallbackConfirmTitle": "改存到文件吗？",
+    "fallbackConfirmBody": "aitap 在这台机器上访问不了系统钥匙串。可以改存到你 home 目录下的一个文件——仅你本人可读。继续吗？",
+    "fallbackConfirmYes": "存到文件",
+    "fallbackConfirmNo": "取消"
   },
   "downstream": {
     "headline_one": "{{count}} 个下游节点未验证",

@@ -154,7 +154,13 @@ def _run_l2(result: ScanResult, *, auto_approve: bool, json_mode: bool) -> ScanR
         key_status = secrets_module.key_status(settings.provider.name)  # type: ignore[arg-type]
         if not key_status.configured:
             if not json_mode:
-                pretty = settings.provider.name.title()
+                # ``.title()`` produces "Openai" — reads like a typo. Use a
+                # tiny display map so the CLI message matches how each
+                # provider canonically capitalises its name.
+                pretty = {
+                    "anthropic": "Anthropic",
+                    "openai": "OpenAI",
+                }.get(settings.provider.name, settings.provider.name)
                 article = "an" if pretty[0].lower() in "aeiou" else "a"
                 env_var = (
                     "ANTHROPIC_API_KEY"

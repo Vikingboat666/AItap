@@ -345,14 +345,18 @@
     "saveFailure": "Couldn't save the key. Try again.",
     "clearSuccess": "Key removed.",
     "clearFailure": "Couldn't remove the key. Try again.",
-    "testOk": "{{detail}}",
-    "testFail": "{{detail}}",
+    "testOk": "The key works.",
+    "testFail": "The test failed. Open Settings to retry.",
     "lastTested": "Last tested {{when}}",
     "noKeyHint": "No key set — runs that need {{provider}} will be skipped.",
     "sourceKeyring": "system keychain",
     "sourceFallback": "fallback file",
     "sourceEnv": "environment variable",
-    "sourceNone": "nowhere yet"
+    "sourceNone": "nowhere yet",
+    "fallbackConfirmTitle": "Save to a file instead?",
+    "fallbackConfirmBody": "Aitap can't reach your system keychain on this machine. We can save the key to a file in your home folder — only you can read it. Continue?",
+    "fallbackConfirmYes": "Save to file",
+    "fallbackConfirmNo": "Cancel"
   },
   "downstream": {
     "headline_one": "{{count}} downstream node unverified",

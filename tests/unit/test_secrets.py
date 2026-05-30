@@ -44,6 +44,12 @@ class _FakeKeyring:
     def __init__(self) -> None:
         self.store: dict[tuple[str, str], str] = {}
         self.usable = True
+        # When True, ``set_password`` raises — mimics a reachable but
+        # broken keyring (Keychain locked, SecretService daemon crashed
+        # mid-write, etc.). Used by the security tests to prove that a
+        # runtime write failure surfaces as ``KeyringUnavailableError``
+        # rather than a silent file fallback.
+        self.fail_on_set = False
 
     # The real package exposes a Keyring instance whose module path is
     # used to decide "is this backend usable?". We mimic that.
@@ -57,6 +63,8 @@ class _FakeKeyring:
         return self.store.get((service, account))
 
     def set_password(self, service: str, account: str, value: str) -> None:
+        if self.fail_on_set:
+            raise RuntimeError("simulated keyring write failure")
         self.store[(service, account)] = value
 
     def delete_password(self, service: str, account: str) -> None:
@@ -173,23 +181,38 @@ def test_keyring_delete_truly_removes(
 # ---------------------------------------------------------------------------
 
 
-def test_set_via_fallback_when_keyring_unusable(
+def test_set_without_opt_in_raises_when_keyring_unusable(
     fake_keyring: _FakeKeyring, isolated_home: Path, clean_env: None
 ) -> None:
-    """When the keyring backend reports unusable, writes go to ``~/.aitap/secrets.yaml``."""
+    """When the keyring is unusable and the caller didn't opt into the file
+    fallback, ``set_key`` raises and writes **nothing**. The security model
+    forbids a silent file-write (see docs/settings-ui-design.md §Security)."""
     fake_keyring.usable = False
-    status = secrets_module.set_key("anthropic", "sk-ant-fallback-xyzz9876")
+    with pytest.raises(secrets_module.KeyringUnavailableError):
+        secrets_module.set_key("anthropic", "sk-ant-fallback-xyzz9876")
 
-    assert status.source == "fallback"
-    assert status.configured is True
+    # Nothing landed on disk — the fallback path must not exist.
+    fallback_path = isolated_home / ".aitap" / "secrets.yaml"
+    assert not fallback_path.exists()
+
+    # And the resolver still reports unconfigured.
+    assert secrets_module.key_status("anthropic").configured is False
+
+
+def test_set_without_opt_in_raises_when_keyring_write_fails(
+    fake_keyring: _FakeKeyring, isolated_home: Path, clean_env: None
+) -> None:
+    """Same security guarantee when the keyring is *reachable* but the
+    underlying write throws (Keychain locked, SecretService crashed, …)."""
+    fake_keyring.usable = True
+    fake_keyring.fail_on_set = True
+
+    with pytest.raises(secrets_module.KeyringUnavailableError):
+        secrets_module.set_key("anthropic", "sk-ant-write-fail-12345678")
 
     fallback_path = isolated_home / ".aitap" / "secrets.yaml"
-    assert fallback_path.is_file()
-    # File must NOT live anywhere under the cwd (project tree).
-    cwd = Path.cwd().resolve()
-    assert cwd not in fallback_path.resolve().parents
-
-    assert secrets_module.get_key("anthropic") == "sk-ant-fallback-xyzz9876"
+    assert not fallback_path.exists()
+    assert secrets_module.key_status("anthropic").configured is False
 
 
 def test_set_via_explicit_fallback_opt_in(
@@ -211,7 +234,9 @@ def test_fallback_file_is_user_only_on_posix(
     fake_keyring: _FakeKeyring, isolated_home: Path, clean_env: None
 ) -> None:
     fake_keyring.usable = False
-    secrets_module.set_key("openai", "sk-fallback-mode-1234567890abc")
+    # use_fallback=True is the explicit opt-in path the new contract
+    # requires; without it the call raises (see the security tests above).
+    secrets_module.set_key("openai", "sk-fallback-mode-1234567890abc", use_fallback=True)
 
     fallback_path = isolated_home / ".aitap" / "secrets.yaml"
     mode = fallback_path.stat().st_mode & 0o777
@@ -225,8 +250,10 @@ def test_fallback_delete_removes_entry(
     fake_keyring: _FakeKeyring, isolated_home: Path, clean_env: None
 ) -> None:
     fake_keyring.usable = False
-    secrets_module.set_key("anthropic", "sk-ant-fb-2222222222a")
-    secrets_module.set_key("openai", "sk-fb-3333333333b")
+    # Both writes use the explicit opt-in path now that silent fallback
+    # is forbidden by the security contract.
+    secrets_module.set_key("anthropic", "sk-ant-fb-2222222222a", use_fallback=True)
+    secrets_module.set_key("openai", "sk-fb-3333333333b", use_fallback=True)
 
     secrets_module.delete_key("anthropic")
     assert secrets_module.get_key("anthropic") is None

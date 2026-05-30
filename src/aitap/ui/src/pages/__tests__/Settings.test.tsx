@@ -119,6 +119,105 @@ describe("Settings page", () => {
     });
   });
 
+  it("409 from keyring-unavailable shows a confirm dialog, then re-saves with use_fallback=true", async () => {
+    // Security regression: when the OS keyring is unreachable, the
+    // backend 409s rather than silently writing to the fallback file.
+    // The UI must show a confirm dialog and only re-POST with
+    // use_fallback=true after the user clicks "Save to file" — never
+    // silently. The raw key still must not leak to the visible DOM.
+    const seenPayloads: Array<Record<string, unknown>> = [];
+    server.use(
+      http.get("/api/settings", () => HttpResponse.json(settingsBody())),
+      http.post("/api/settings/key", async ({ request }) => {
+        const body = (await request.json()) as Record<string, unknown>;
+        seenPayloads.push(body);
+        if (!body.use_fallback) {
+          return HttpResponse.json(
+            { detail: "Aitap can't reach your system keychain…" },
+            { status: 409 },
+          );
+        }
+        return HttpResponse.json({
+          provider: "anthropic",
+          configured: true,
+          source: "fallback",
+          masked: "sk-ant-...aaaa",
+        });
+      }),
+    );
+
+    renderWithProviders(<Settings />);
+    const user = userEvent.setup();
+
+    const input = await screen.findByLabelText(/api key for anthropic/i);
+    await user.type(input, FAKE_ANTHROPIC);
+
+    const saveButtons = screen.getAllByRole("button", { name: /^save$/i });
+    await user.click(saveButtons[0]);
+
+    // The confirm dialog appears (named by aria-labelledby → title).
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toBeInTheDocument();
+    // Input still holds the key — we have NOT cleared it on the first
+    // failed attempt; the user is mid-confirmation.
+    expect(input).toHaveValue(FAKE_ANTHROPIC);
+
+    // Click "Save to file" inside the dialog.
+    const confirmButton = await screen.findByRole("button", {
+      name: /save to file/i,
+    });
+    await user.click(confirmButton);
+
+    await waitFor(() => {
+      expect(screen.getByText(/^key saved\.$/i)).toBeInTheDocument();
+    });
+
+    // Two POSTs went to the server; the second carries use_fallback=true.
+    expect(seenPayloads).toHaveLength(2);
+    expect(seenPayloads[0]).toMatchObject({ use_fallback: false });
+    expect(seenPayloads[1]).toMatchObject({ use_fallback: true });
+
+    // Dialog closed + input cleared on success; raw key gone from DOM.
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(input).toHaveValue("");
+    expect(document.body.textContent).not.toContain(FAKE_ANTHROPIC);
+  });
+
+  it("Cancel on the fallback dialog leaves the key unsaved and keeps the input", async () => {
+    const seenPayloads: Array<Record<string, unknown>> = [];
+    server.use(
+      http.get("/api/settings", () => HttpResponse.json(settingsBody())),
+      http.post("/api/settings/key", async ({ request }) => {
+        const body = (await request.json()) as Record<string, unknown>;
+        seenPayloads.push(body);
+        return HttpResponse.json(
+          { detail: "Aitap can't reach your system keychain…" },
+          { status: 409 },
+        );
+      }),
+    );
+
+    renderWithProviders(<Settings />);
+    const user = userEvent.setup();
+
+    const input = await screen.findByLabelText(/api key for anthropic/i);
+    await user.type(input, FAKE_ANTHROPIC);
+    const saveButtons = screen.getAllByRole("button", { name: /^save$/i });
+    await user.click(saveButtons[0]);
+
+    await screen.findByRole("dialog");
+
+    const cancel = await screen.findByRole("button", { name: /^cancel$/i });
+    await user.click(cancel);
+
+    // No second POST. Dialog closed. Input still has the key so the
+    // user can edit or re-submit (the key stays in React state until
+    // the user clears the field — that's the same as before the change).
+    expect(seenPayloads).toHaveLength(1);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(input).toHaveValue(FAKE_ANTHROPIC);
+  });
+
   it("test button shows the plain-language detail returned by the API", async () => {
     server.use(
       http.get("/api/settings", () =>

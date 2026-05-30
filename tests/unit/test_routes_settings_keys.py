@@ -51,6 +51,9 @@ class _FakeKeyring:
     def __init__(self) -> None:
         self.store: dict[tuple[str, str], str] = {}
         self.usable = True
+        # When True, ``set_password`` raises so we can exercise the
+        # "keyring reachable but the write throws" branch in set_key.
+        self.fail_on_set = False
 
     class _Backend:
         pass
@@ -62,6 +65,8 @@ class _FakeKeyring:
         return self.store.get((service, account))
 
     def set_password(self, service: str, account: str, value: str) -> None:
+        if self.fail_on_set:
+            raise RuntimeError("simulated keyring write failure")
         self.store[(service, account)] = value
 
     def delete_password(self, service: str, account: str) -> None:
@@ -225,6 +230,72 @@ def test_set_key_rejects_unknown_provider(
     assert res.status_code == 422  # pydantic Literal type rejects it
 
 
+def test_set_key_returns_409_when_keyring_unavailable_and_no_opt_in(
+    vaulted_app: tuple[TestClient, _FakeKeyring],
+) -> None:
+    """The keyring being down must NOT silently land the key in a file.
+
+    The contract is: the route 409s; the UI shows a confirm dialog; the
+    user re-POSTs with ``use_fallback: true``. We verify both halves —
+    the 409 plus the explicit-opt-in re-POST succeeding — and crucially
+    that no fallback file got written on the first attempt.
+    """
+    client, fake_keyring = vaulted_app
+    fake_keyring.usable = False  # simulate headless-Linux / no Secret Service
+
+    res = client.post(
+        "/api/settings/key",
+        json={"provider": "anthropic", "key": _FAKE_ANTHROPIC},
+    )
+    assert res.status_code == 409, res.text
+    detail = res.json()["detail"]
+    # Plain-language remediation (no stack trace, no internal exception
+    # string, no key); names the next action.
+    assert "keychain" in detail.lower()
+    assert "file" in detail.lower()
+    assert "sk-" not in detail  # belt-and-suspenders on never-echo-key
+
+    # No silent fallback file got written.
+    status = secrets_module.key_status("anthropic")
+    assert status.configured is False
+
+    # Now the user "confirms" → UI re-POSTs with use_fallback=true.
+    res2 = client.post(
+        "/api/settings/key",
+        json={
+            "provider": "anthropic",
+            "key": _FAKE_ANTHROPIC,
+            "use_fallback": True,
+        },
+    )
+    assert res2.status_code == 200, res2.text
+    body = res2.json()
+    assert body["configured"] is True
+    assert body["source"] == "fallback"
+    # Response body still never carries the raw key.
+    assert _FAKE_ANTHROPIC not in res2.text
+
+
+def test_set_key_returns_409_when_keyring_write_fails(
+    vaulted_app: tuple[TestClient, _FakeKeyring],
+) -> None:
+    """Keyring reachable but the write itself throws — same 409 contract.
+
+    Locked Keychain, SecretService daemon crashed mid-write, etc. We
+    must not silently downgrade to file; we 409 so the UI confirms.
+    """
+    client, fake_keyring = vaulted_app
+    fake_keyring.usable = True
+    fake_keyring.fail_on_set = True
+
+    res = client.post(
+        "/api/settings/key",
+        json={"provider": "anthropic", "key": _FAKE_ANTHROPIC},
+    )
+    assert res.status_code == 409, res.text
+    assert secrets_module.key_status("anthropic").configured is False
+
+
 def test_get_settings_after_save_shows_masked_only(
     vaulted_app: tuple[TestClient, _FakeKeyring],
 ) -> None:
@@ -364,6 +435,47 @@ def test_test_endpoint_network_when_provider_error(
     body = res.json()
     assert body["ok"] is False
     assert body["reason"] == "network"
+
+
+def test_test_endpoint_never_echoes_provider_sdk_exception_string(
+    vaulted_app: tuple[TestClient, _FakeKeyring],
+) -> None:
+    """B2 regression: SDK exception strings have historically embedded
+    request payloads (auth headers, body) on 4xx. The route must use
+    *static* copy for the SDK-missing / construction-fail branch — never
+    interpolate ``str(exc)`` into the API body.
+
+    We make ``get_client`` raise a ``ProviderError`` whose message looks
+    like a real SDK leak ("Authorization: Bearer sk-anthropic-LEAKY-...")
+    and assert that string does not appear anywhere in the response.
+    """
+    client, _ = vaulted_app
+    client.post(
+        "/api/settings/key",
+        json={"provider": "anthropic", "key": _FAKE_ANTHROPIC},
+    )
+
+    leaky = "anthropic API error: Authorization: Bearer sk-anthropic-LEAKY-SHOULD-NOT-LEAK-7890"
+
+    from aitap.deep import client as client_module
+
+    def fake_factory(provider: str, model: str, api_key: str | None = None) -> LLMClient:
+        raise ProviderError(leaky)
+
+    with patch.object(client_module, "get_client", fake_factory):
+        res = client.post("/api/settings/test/anthropic")
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is False
+    assert body["reason"] == "other"
+    # The static SDK-missing detail mentions installation; the leaky
+    # bearer token must not be anywhere in the body.
+    assert "LEAKY" not in res.text
+    assert "Bearer" not in res.text
+    assert "Authorization" not in res.text
+    # Detail still tells the user what to do (CLAUDE.md plain-language).
+    assert "pip install" in body["detail"]
 
 
 def test_test_endpoint_reports_missing_key_without_calling_provider(
