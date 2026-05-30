@@ -44,6 +44,9 @@ from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.responses import FileResponse
+from starlette.types import Scope
 
 from aitap import secrets as _secrets
 
@@ -120,6 +123,50 @@ def _static_dir() -> Path:
     return Path(__file__).resolve().parent / "static"
 
 
+class _SpaStaticFiles(StaticFiles):
+    """``StaticFiles`` that serves ``index.html`` on 404 for SPA paths.
+
+    React Router owns the client-side routes (``/settings``, ``/playground/...``,
+    ``/pipelines/<id>``, …). When the user refreshes the page or pastes
+    one of those URLs directly, the browser sends a real HTTP request
+    that ``StaticFiles`` answers with a 404 because nothing physical
+    matches. We catch that single failure mode and hand back the SPA's
+    ``index.html`` — React Router then takes over and renders the right
+    page client-side. API routes are unaffected because they're
+    registered before this mount and have priority.
+    """
+
+    async def get_response(self, path: str, scope: Scope) -> FileResponse:  # type: ignore[override]
+        # We construct with ``html=False`` so the parent doesn't silently
+        # fall back to ``index.html`` for *any* missing path — that's
+        # exactly the behaviour that would mask ``/api/foo`` (typo) as
+        # a 200 HTML page. We do the fallback ourselves here and only
+        # for paths that look like SPA routes.
+        try:
+            return await super().get_response(path, scope)  # type: ignore[return-value]
+        except StarletteHTTPException as exc:
+            if exc.status_code != 404:
+                raise
+            # Starlette gives us the native path (``api\foo`` on Windows,
+            # ``api/foo`` on POSIX) — normalise before pattern-matching.
+            norm = path.replace("\\", "/").lstrip("/")
+            if (
+                norm == "api"
+                or norm.startswith("api/")
+                or norm in {"openapi.json", "docs", "redoc"}
+                or norm.startswith(("docs/", "redoc/"))
+            ):
+                # API / OpenAPI / docs paths: a 404 here means the caller
+                # asked for an endpoint that genuinely doesn't exist.
+                # Surface the real 404 JSON, not a fake 200 HTML page.
+                raise
+            index = Path(self.directory) / "index.html"  # type: ignore[arg-type]
+            if not index.is_file():
+                # No bundle to fall back to — propagate the original 404.
+                raise
+            return FileResponse(index)
+
+
 def _landing_html(attached: list[str]) -> str:
     """Minimal HTML shown when the React bundle is missing.
 
@@ -188,11 +235,23 @@ def create_app() -> FastAPI:
 
     static_dir = _static_dir()
     if static_dir.is_dir() and any(static_dir.iterdir()):
-        # ``html=True`` makes StaticFiles serve ``index.html`` for the
-        # root path (and 404 fallbacks for SPA routes — FastAPI handles
-        # the rest via its own routing precedence). API routes registered
-        # above take priority because they were added first.
-        app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="ui")
+        # SPA fallback: any non-API path that doesn't match a real bundled
+        # file is rewritten to ``index.html`` so React Router can take
+        # over. Without this, a refresh on ``/settings`` /
+        # ``/playground/...`` / ``/pipelines/<id>`` returns FastAPI's
+        # default ``{"detail":"Not Found"}`` JSON because StaticFiles
+        # only serves files that physically exist under ``static_dir``.
+        # ``html=True`` retains the "serve index.html at /" behaviour.
+        # API routes registered above still take priority because they're
+        # added first; the mount only catches what falls through.
+        app.mount(
+            "/",
+            # ``html=False`` so the SPA fallback below is the *only* code
+            # path that decides whether to serve ``index.html`` — keeps
+            # API 404s honest. See ``_SpaStaticFiles`` for the rationale.
+            _SpaStaticFiles(directory=str(static_dir), html=False),
+            name="ui",
+        )
     else:
         # No bundle — serve a tiny landing page. Bound *only* to the
         # exact root path so it doesn't shadow other future routes.
