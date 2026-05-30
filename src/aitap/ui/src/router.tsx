@@ -8,6 +8,7 @@ import { Playground } from "./pages/Playground";
 import { History } from "./pages/History";
 import { HistoryLanding } from "./pages/HistoryLanding";
 import { Audit } from "./pages/Audit";
+import { Settings } from "./pages/Settings";
 import { NotFound } from "./pages/NotFound";
 
 export const router = createBrowserRouter([
@@ -23,6 +24,7 @@ export const router = createBrowserRouter([
       { path: "history", element: <HistoryLanding /> },
       { path: "history/:promptId", element: <History /> },
       { path: "audit", element: <Audit /> },
+      { path: "settings", element: <Settings /> },
       { path: "*", element: <NotFound /> },
     ],
   },

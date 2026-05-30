@@ -13,6 +13,7 @@ Covers:
 from __future__ import annotations
 
 import re
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -518,26 +519,32 @@ def test_scan_deep_falls_back_to_l1_when_provider_auth_fails(
 ) -> None:
     """Regression: aitap scan --deep with no API key used to crash with a
     full ProviderAuthError traceback. The contract says: warn on stderr,
-    return the L1 result, exit 0. Auth errors fire lazily on the first
-    chat() call (per the LLMClient contract) — they propagate out of
-    asyncio.run inside the enrichers, so the wrapper around asyncio.run
-    is what makes the fallback work.
-    """
-    from aitap.deep.client import ProviderAuthError
-    from aitap.deep.testing import MockLLMClient
+    return the L1 result, exit 0.
 
-    # MockLLMClient that blows up on the first chat() — same shape as a
-    # real provider whose API key is missing.
-    class _AuthFailingClient(MockLLMClient):
-        async def chat(self, *args, **kwargs):  # type: ignore[no-untyped-def]
-            raise ProviderAuthError("ANTHROPIC_API_KEY not set; pass api_key= or set the env var")
+    Two code paths cover this now:
+
+    1. The vault-level pre-check (added by the secure-settings worktree)
+       short-circuits before SDK construction when ``secrets.key_status``
+       reports the provider has no key. It emits a plain-language sentence
+       pointing the user at ``aitap ui → Settings`` (or the env var).
+    2. The auth-error catch around ``asyncio.run`` in ``_run_l2`` still
+       handles the case where a key *is* set but the provider rejects
+       it at chat time. That path is exercised in test #2 below.
+
+    This test pins path #1: no env var configured + no vault entry, so
+    the pre-check fires and we never reach the failing client.
+    """
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    # Pin the vault to an isolated home so a developer running the test
+    # suite with a real Credential Manager key doesn't accidentally
+    # satisfy the pre-check.
+    from aitap import secrets as secrets_module
+
+    monkeypatch.setattr(secrets_module, "_keyring_usable", lambda: False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: Path(tempfile.mkdtemp())))
 
     fixture = Path(__file__).resolve().parent.parent / "fixtures" / "openai_basic"
-    monkeypatch.setattr(
-        "aitap.deep.client.get_client",
-        lambda _provider, _model, api_key=None: _AuthFailingClient(),
-    )
-
     runner = CliRunner(env={"COLUMNS": "200"})
     result = runner.invoke(app, ["scan", str(fixture), "--deep", "--yes"])
 
@@ -545,7 +552,10 @@ def test_scan_deep_falls_back_to_l1_when_provider_auth_fails(
         f"--deep should not crash on auth failure; got exit {result.exit_code}\n"
         f"stderr:\n{result.stderr}"
     )
-    assert "L2 enrichment aborted" in result.stderr
+    # Plain-language pre-check fired; the user got an actionable sentence
+    # and the L1 result still rendered.
+    assert "needs a Anthropic key" in result.stderr or "needs an Anthropic key" in result.stderr
+    assert "Settings" in result.stderr
     assert "ANTHROPIC_API_KEY" in result.stderr
     # L1 result still rendered to stdout.
     assert "Prompts" in result.stdout or "•" in result.stdout
