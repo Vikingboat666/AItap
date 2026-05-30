@@ -27,13 +27,15 @@
  * save / test / clear endpoints from `../api/settings-keys.ts` (which
  * shadows the not-yet-regenerated client; see that file's docstring).
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
 import { apiClient } from "../api/client";
 import { ApiError } from "../api/generated";
+import { SettingsService } from "../api/generated/services/SettingsService";
 import type { SettingsResponse } from "../api/generated/models/SettingsResponse";
+import type { SettingsUpdate } from "../api/generated/models/SettingsUpdate";
 import { Badge, Card, CardHeader, EmptyState } from "../components/primitives";
 import { ErrorState } from "../components/feedback";
 import { ListSkeleton } from "../components/skeletons";
@@ -93,6 +95,11 @@ export function Settings() {
         />
       </Card>
 
+      <DefaultsCard
+        current={settingsQ.data}
+        onSaved={() => void settingsQ.refetch()}
+      />
+
       {PROVIDERS.length === 0 ? (
         <EmptyState
           title={t("settings.title")}
@@ -119,6 +126,232 @@ export function Settings() {
         </ul>
       )}
     </div>
+  );
+}
+
+/**
+ * Known model ids per provider — clickable hints in the input, not a hard
+ * allow-list. Free-text input wins so a new model from either vendor works
+ * without needing an aitap release.
+ */
+const MODEL_HINTS: Record<ProviderName, readonly string[]> = {
+  anthropic: ["claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5"],
+  openai: ["gpt-4o", "gpt-4o-mini"],
+};
+
+function DefaultsCard({
+  current,
+  onSaved,
+}: {
+  current: SettingsResponse | undefined;
+  onSaved: () => void;
+}) {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+
+  // The form's controlled fields. We initialise from `current` and
+  // re-sync whenever the settings query reports new data — so a save
+  // (which triggers a refetch) keeps the inputs aligned with the
+  // server's authoritative state.
+  const [provider, setProvider] = useState<ProviderName>(
+    (current?.provider as ProviderName | undefined) ?? "anthropic",
+  );
+  const [model, setModel] = useState<string>(current?.model ?? "");
+  const [judgeModel, setJudgeModel] = useState<string>(current?.judge_model ?? "");
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState<{
+    tone: "ok" | "err";
+    text: string;
+  } | null>(null);
+
+  // Reset the form when the server-side settings change beneath us.
+  // Using JSON.stringify lets the effect react to deep field changes
+  // without manual three-field comparison.
+  const currentKey = current
+    ? `${current.provider}|${current.model}|${current.judge_model ?? ""}`
+    : "";
+  useEffect(() => {
+    if (!current) return;
+    setProvider(current.provider as ProviderName);
+    setModel(current.model);
+    setJudgeModel(current.judge_model ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentKey]);
+
+  const hints = MODEL_HINTS[provider];
+
+  async function handleSave() {
+    setBusy(true);
+    setFeedback(null);
+    const payload: SettingsUpdate = {
+      provider,
+      model: model.trim() || undefined,
+      // Empty string is intentional — the backend normalises it to
+      // ``null`` (fall back to ``model``). Send it through so a user
+      // can clear a previously-set judge model.
+      judge_model: judgeModel,
+    };
+    try {
+      await SettingsService.putSettingsApiSettingsPut({ requestBody: payload });
+      setFeedback({ tone: "ok", text: t("settings.defaultsSaved") });
+      await queryClient.invalidateQueries({ queryKey: ["settings"] });
+      onSaved();
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : t("settings.defaultsSaveFailure");
+      setFeedback({ tone: "err", text: message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader
+        title={t("settings.defaultsTitle")}
+        subtitle={t("settings.defaultsSubtitle")}
+      />
+      <div className="space-y-4 px-4 py-4">
+        {/* Provider radio group */}
+        <fieldset>
+          <legend className="mb-2 text-xs font-medium text-ink-700">
+            {t("settings.defaultsProviderLabel")}
+          </legend>
+          <div className="flex gap-2">
+            {(["anthropic", "openai"] as const).map((p) => (
+              <label
+                key={p}
+                className={clsx(
+                  "cursor-pointer rounded-md border px-3 py-1.5 text-xs",
+                  provider === p
+                    ? "border-brand-500 bg-brand-50 text-brand-700"
+                    : "border-ink-200 text-ink-700 hover:bg-ink-50",
+                )}
+              >
+                <input
+                  type="radio"
+                  name="provider"
+                  value={p}
+                  className="sr-only"
+                  checked={provider === p}
+                  onChange={() => {
+                    // Switching provider also clears the model and
+                    // judge-model inputs — keeping a Claude id selected
+                    // after switching to OpenAI (or vice-versa) would
+                    // let the user save a combination that can't run.
+                    // Same shape of footgun as the segment-ui target
+                    // switch in M5; we close it the same way.
+                    if (p === provider) return;
+                    setProvider(p);
+                    setModel("");
+                    setJudgeModel("");
+                  }}
+                />
+                {p === "anthropic" ? "Anthropic" : "OpenAI"}
+              </label>
+            ))}
+          </div>
+        </fieldset>
+
+        {/* Default model */}
+        <div>
+          <label
+            htmlFor="defaults-model"
+            className="mb-1 block text-xs font-medium text-ink-700"
+          >
+            {t("settings.defaultsModelLabel")}
+          </label>
+          <input
+            id="defaults-model"
+            type="text"
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            placeholder={hints[0]}
+            spellCheck={false}
+            autoComplete="off"
+            className="w-full rounded-md border border-ink-200 px-2 py-1 text-xs focus:border-brand-500 focus:outline-none"
+          />
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-ink-500">
+            <span>{t("settings.defaultsCommonHint")}</span>
+            {hints.map((h) => (
+              <button
+                key={h}
+                type="button"
+                onClick={() => setModel(h)}
+                aria-label={t("settings.defaultsModelHintAria", { model: h })}
+                className="rounded border border-ink-200 px-1.5 py-0.5 font-mono text-[10px] text-ink-700 hover:bg-ink-50"
+              >
+                {h}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Judge model */}
+        <div>
+          <label
+            htmlFor="defaults-judge"
+            className="mb-1 block text-xs font-medium text-ink-700"
+          >
+            {t("settings.defaultsJudgeLabel")}
+          </label>
+          <input
+            id="defaults-judge"
+            type="text"
+            value={judgeModel}
+            onChange={(e) => setJudgeModel(e.target.value)}
+            placeholder={hints[0]}
+            spellCheck={false}
+            autoComplete="off"
+            className="w-full rounded-md border border-ink-200 px-2 py-1 text-xs focus:border-brand-500 focus:outline-none"
+          />
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-ink-500">
+            <span>{t("settings.defaultsJudgeBlankHint")}</span>
+            {hints.map((h) => (
+              <button
+                key={h}
+                type="button"
+                onClick={() => setJudgeModel(h)}
+                aria-label={t("settings.defaultsJudgeHintAria", { model: h })}
+                className="rounded border border-ink-200 px-1.5 py-0.5 font-mono text-[10px] text-ink-700 hover:bg-ink-50"
+              >
+                {h}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Save */}
+        <div className="flex items-center justify-end gap-3">
+          {feedback && (
+            <div
+              role="status"
+              className={clsx(
+                "rounded-md px-2 py-1 text-[11px]",
+                feedback.tone === "ok"
+                  ? "bg-emerald-50 text-emerald-700"
+                  : "bg-rose-50 text-rose-700",
+              )}
+            >
+              {feedback.text}
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={() => void handleSave()}
+            disabled={busy}
+            className={clsx(
+              "rounded-md px-3 py-1.5 text-xs font-medium text-white",
+              busy
+                ? "cursor-not-allowed bg-ink-300"
+                : "bg-brand-600 hover:bg-brand-700",
+            )}
+          >
+            {busy ? t("settings.defaultsSaving") : t("settings.defaultsSave")}
+          </button>
+        </div>
+      </div>
+    </Card>
   );
 }
 

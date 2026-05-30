@@ -94,10 +94,78 @@ def _pretty_provider(provider: str) -> str:
     return _PRETTY_PROVIDER_NAMES.get(provider, provider)
 
 
-# In-memory override store. Keyed by attribute name -> new value. Wiping the
-# process resets — by design for Wave 3 where YAML persistence is owned by
-# the prompts API worktree.
+# In-memory override store. Keyed by attribute name -> new value. The
+# YAML persister below is the durable mirror; this dict keeps the current
+# process in sync without a full ``Settings`` reload.
 _MUTABLE_STATE: dict[str, object] = {}
+
+
+def _persist_provider_defaults_to_yaml(
+    settings: Settings,
+    *,
+    provider: str | None,
+    model: str | None,
+    judge_model: str | None,
+) -> None:
+    """Write the provider defaults back to ``.aitap/config.yaml``.
+
+    Without this, a PUT to ``/api/settings`` would only live in the
+    in-memory ``_MUTABLE_STATE`` and revert on the next ``aitap ui``
+    restart — which would look like the UI silently forgot the user's
+    choice. We round-trip through PyYAML; comments are not preserved
+    (a small price for not adding ruamel.yaml as a hard dep).
+
+    Only the three fields the Settings page exposes are touched; cost
+    limits and anything else in the file are left intact. If the file
+    doesn't exist (dev install that never ran ``aitap init`` in this
+    directory), we silently skip — the runtime override still applies
+    for the rest of this process.
+    """
+    import yaml  # local import: only this helper needs PyYAML.
+
+    config_path = settings.project_root / settings.aitap_dir / "config.yaml"
+    if not config_path.is_file():
+        _LOGGER.info(
+            "No .aitap/config.yaml at %s — defaults change kept in memory only",
+            config_path,
+        )
+        return
+
+    try:
+        raw = config_path.read_text(encoding="utf-8")
+        loaded = yaml.safe_load(raw)
+    except (OSError, yaml.YAMLError):
+        _LOGGER.warning(
+            "Couldn't read .aitap/config.yaml; defaults change kept in memory only",
+            exc_info=True,
+        )
+        return
+
+    data: dict[str, object] = loaded if isinstance(loaded, dict) else {}
+    raw_provider = data.get("provider")
+    provider_block: dict[str, object] = raw_provider if isinstance(raw_provider, dict) else {}
+    data["provider"] = provider_block
+
+    if provider is not None:
+        provider_block["name"] = provider
+    if model is not None:
+        provider_block["model"] = model
+    if judge_model is not None:
+        # An explicit empty string from the UI means "fall back to
+        # ``model``" — same semantics as the default YAML stub where
+        # ``judge_model: null``.
+        provider_block["judge_model"] = judge_model if judge_model.strip() else None
+
+    try:
+        config_path.write_text(
+            yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
+            encoding="utf-8",
+        )
+    except OSError:
+        _LOGGER.warning(
+            "Couldn't write .aitap/config.yaml; defaults change kept in memory only",
+            exc_info=True,
+        )
 
 
 @router.get("/settings", response_model=SettingsResponse)
@@ -143,11 +211,26 @@ def put_settings(
     if payload.model is not None:
         _MUTABLE_STATE["model"] = payload.model
     if payload.judge_model is not None:
-        _MUTABLE_STATE["judge_model"] = payload.judge_model
+        # Empty string from the UI means "fall back to the default
+        # model" — normalise to None so :class:`ProviderConfig` reads it
+        # as the documented sentinel.
+        _MUTABLE_STATE["judge_model"] = payload.judge_model if payload.judge_model.strip() else None
     if payload.cost_per_run_usd is not None:
         _MUTABLE_STATE["cost_per_run_usd"] = float(payload.cost_per_run_usd)
     if payload.cost_per_session_usd is not None:
         _MUTABLE_STATE["cost_per_session_usd"] = float(payload.cost_per_session_usd)
+
+    # Persist the provider triple to .aitap/config.yaml so the change
+    # survives the next ``aitap ui`` restart. Cost limits are not
+    # persisted from the UI yet (they're API-only — separate follow-up).
+    if any(f is not None for f in (payload.provider, payload.model, payload.judge_model)):
+        _persist_provider_defaults_to_yaml(
+            settings,
+            provider=payload.provider.value if payload.provider is not None else None,
+            model=payload.model,
+            judge_model=payload.judge_model,
+        )
+
     return get_settings_endpoint(settings, conn)
 
 
