@@ -32,6 +32,7 @@ CORS:
 
 from __future__ import annotations
 
+import logging
 import threading
 import webbrowser
 from importlib import import_module
@@ -43,6 +44,8 @@ from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+
+from aitap import secrets as _secrets
 
 
 def _make_health_router() -> APIRouter:
@@ -171,6 +174,14 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Install the secret-log filter on the root logger and on uvicorn's
+    # access / error loggers. This catches any stray ``sk-...`` /
+    # ``Bearer ...`` strings before they reach the console or log file.
+    # Idempotent — repeated calls don't double-attach.
+    _secrets.install_log_filter(logging.getLogger())
+    for log_name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
+        _secrets.install_log_filter(logging.getLogger(log_name))
 
     app.include_router(_make_health_router())
     attached = _attach_optional_routers(app)

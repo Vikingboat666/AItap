@@ -55,6 +55,7 @@ import {
 } from "../components/ResultsTable";
 import { AutoIterateModal } from "../components/AutoIterateModal";
 import { IterationProgress } from "../components/IterationProgress";
+import { MissingKeyInlineAlert } from "../components/MissingKeyInlineAlert";
 import { DagView } from "./components/DagView";
 import { clsx } from "../lib/clsx";
 
@@ -414,6 +415,8 @@ export function Playground() {
           onTemperatureChange={setTemperature}
           providerHint={settingsQ.data?.provider}
         />
+
+        <MissingKeyInlineAlert provider={settingsQ.data?.provider} />
 
         <button
           type="button"

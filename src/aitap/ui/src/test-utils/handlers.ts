@@ -211,13 +211,31 @@ export const pipelineDisconnectedFixture: PipelineDetailResponse = {
   },
 };
 
-export const settingsFixture: SettingsResponse = {
+export const settingsFixture: SettingsResponse & { keys: unknown[] } = {
   cost_per_run_usd: 0.01,
   cost_per_session_usd: 0.05,
   judge_model: null,
   model: "gpt-4o-mini",
   provider: "openai",
   providers_available: [],
+  // Additive field (CONTRACTS.md additive protocol, secure-settings
+  // worktree). Kept off the generated `SettingsResponse` type until
+  // checkpoint 4 runs `pnpm gen:api` — once that lands, both fixtures
+  // and the live API stay byte-for-byte identical.
+  //
+  // We default the configured provider to ``openai`` so existing
+  // Playground / Inventory tests don't trip the MissingKeyBanner /
+  // MissingKeyInlineAlert by accident. Suites that exercise the
+  // unconfigured path override this via `server.use(...)`.
+  keys: [
+    { provider: "anthropic", configured: false, source: "none", masked: null },
+    {
+      provider: "openai",
+      configured: true,
+      source: "keyring",
+      masked: "sk-...xxxx",
+    },
+  ],
 };
 
 export const runDetailFixture: RunDetailResponse = {
@@ -303,6 +321,7 @@ export const iterateSessionFailedFixture: IterateSessionResponse = {
 };
 
 export const handlers = [
+  http.get("/api/settings", () => HttpResponse.json(settingsFixture)),
   http.get("/api/prompts", () => HttpResponse.json(promptListFixture)),
   http.get("/api/prompts/:promptId", ({ params }) => {
     if (params.promptId === "p_test_alpha") {

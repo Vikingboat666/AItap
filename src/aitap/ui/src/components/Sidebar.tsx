@@ -8,6 +8,7 @@ const items = [
   { to: "/playground", labelKey: "nav.playground" },
   { to: "/history", labelKey: "nav.history" },
   { to: "/audit", labelKey: "nav.audit" },
+  { to: "/settings", labelKey: "nav.settings" },
 ];
 
 export function Sidebar() {

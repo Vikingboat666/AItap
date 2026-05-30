@@ -8,6 +8,7 @@ import type { PipelineSummary } from "../api/generated/models/PipelineSummary";
 import type { PromptSummary } from "../api/generated/models/PromptSummary";
 import { Badge, Card, CardHeader, EmptyState } from "../components/primitives";
 import { ErrorState } from "../components/feedback";
+import { MissingKeyBanner } from "../components/MissingKeyBanner";
 import { ListSkeleton } from "../components/skeletons";
 import { clsx } from "../lib/clsx";
 
@@ -27,6 +28,7 @@ export function Inventory() {
 
   return (
     <div className="space-y-4">
+      <MissingKeyBanner />
       <div className="flex items-center gap-2">
         <TabButton
           active={tab === "prompts"}

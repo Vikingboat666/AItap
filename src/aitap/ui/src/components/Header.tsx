@@ -13,6 +13,7 @@ const TITLE_KEYS: Record<string, string> = {
   "/playground": "header.playground",
   "/history": "header.history",
   "/audit": "header.audit",
+  "/settings": "header.settings",
 };
 
 function deriveTitleKey(pathname: string): string {

@@ -30,6 +30,10 @@ Endpoint inventory (full implementation lives in sibling route modules):
     GET    /api/settings                 -> SettingsResponse
     PUT    /api/settings                 SettingsUpdate -> SettingsResponse
     GET    /api/settings/cost-estimate   ?prompt_id=&model=  -> CostEstimateResponse
+
+    POST   /api/settings/key             SetKeyRequest -> ProviderKeyStatus
+    DELETE /api/settings/key/{provider}  -> ProviderKeyStatus
+    POST   /api/settings/test/{provider} -> TestKeyResponse
 """
 
 from __future__ import annotations
@@ -248,6 +252,20 @@ class CostEstimateResponse(_ApiModel):
     model: str
 
 
+class ProviderKeyStatus(_ApiModel):
+    """Per-provider API-key state for the Settings page.
+
+    Additive (CONTRACTS.md): new type, not a rename. The frontend reads
+    this off ``SettingsResponse.keys``; the raw key value never appears
+    on any response, only the masked preview.
+    """
+
+    provider: Literal["anthropic", "openai"]
+    configured: bool
+    source: Literal["keyring", "fallback", "env", "none"]
+    masked: str | None = None  # e.g. "sk-ant-...XXXX"; null when unconfigured
+
+
 class SettingsResponse(_ApiModel):
     provider: Provider
     model: str
@@ -255,6 +273,9 @@ class SettingsResponse(_ApiModel):
     cost_per_run_usd: float
     cost_per_session_usd: float
     providers_available: list[ProviderEvidence]
+    # Additive: per-provider key status. Default empty so old clients
+    # that don't ask about it still get a well-shaped response.
+    keys: list[ProviderKeyStatus] = Field(default_factory=list)
 
 
 class SettingsUpdate(_ApiModel):
@@ -263,6 +284,40 @@ class SettingsUpdate(_ApiModel):
     judge_model: str | None = None
     cost_per_run_usd: float | None = None
     cost_per_session_usd: float | None = None
+
+
+class SetKeyRequest(_ApiModel):
+    """Body for ``POST /api/settings/key``.
+
+    The raw ``key`` is request-only — it is **never** echoed on the
+    response, never logged, and never persisted into the SQLite store.
+    The response is a :class:`ProviderKeyStatus` containing only
+    metadata.
+    """
+
+    provider: Literal["anthropic", "openai"]
+    key: str = Field(min_length=1)
+    # When False (the default), the route persists via the OS keyring and
+    # 409s the request if the keyring is unusable. The UI then shows a
+    # "your keychain isn't available — save to a file instead?" confirm
+    # dialog and re-POSTs with use_fallback=True. This keeps the silent
+    # fallback path the security model forbids out of the contract.
+    use_fallback: bool = False
+
+
+class TestKeyResponse(_ApiModel):
+    """Result of ``POST /api/settings/test/{provider}``.
+
+    ``ok=True`` means the minimal probe call (Anthropic ``/v1/messages``
+    or OpenAI ``chat.completions`` with a single ``"ping"`` and
+    ``max_tokens=4``) returned a 2xx. ``ok=False`` reports a coarse
+    reason so the UI can render the right plain-language remediation;
+    ``detail`` is a human sentence (never a stack trace, never the key).
+    """
+
+    ok: bool
+    reason: Literal["auth", "rate_limit", "network", "other"] | None = None
+    detail: str | None = None
 
 
 # ---------- Scan trigger (also used by audit) ----------

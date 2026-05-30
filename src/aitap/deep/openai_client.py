@@ -9,9 +9,9 @@ Lazy-imports the ``openai`` SDK; uses the >= 1.30 client surface.
 
 from __future__ import annotations
 
-import os
 from typing import Any, Literal
 
+from aitap import secrets as _secrets
 from aitap.deep.client import (
     ChatMessage,
     ChatResponse,
@@ -100,9 +100,14 @@ class OpenAIClient(LLMClient):
         )
 
     def _resolve_api_key(self) -> str:
-        key = self.api_key or os.environ.get("OPENAI_API_KEY")
+        # Single-owner key reads — see aitap.secrets. A vault key wins
+        # over an env var so an in-UI update reaches the SDK immediately.
+        key = self.api_key or _secrets.get_key("openai")
         if not key:
-            raise ProviderAuthError("OPENAI_API_KEY not set; pass api_key= or set the env var")
+            raise ProviderAuthError(
+                "No OpenAI API key set. Add one in aitap ui → Settings, "
+                "or export OPENAI_API_KEY in your shell."
+            )
         return key
 
 

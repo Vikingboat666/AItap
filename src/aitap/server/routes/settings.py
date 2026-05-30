@@ -22,11 +22,13 @@ config writes.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from aitap import secrets as secrets_module
 from aitap.config import Settings
 from aitap.deep import pricing
 from aitap.scanner.models import (
@@ -36,12 +38,60 @@ from aitap.scanner.models import (
 )
 from aitap.server.routes import (
     CostEstimateResponse,
+    ProviderKeyStatus,
+    SetKeyRequest,
     SettingsResponse,
     SettingsUpdate,
+    TestKeyResponse,
 )
 from aitap.server.routes._deps import get_db, get_settings
 
 router = APIRouter(tags=["settings"])
+
+_LOGGER = logging.getLogger(__name__)
+
+# Provider-specific plain-language messages for the connectivity test.
+# Centralised so en/zh stay aligned with the i18n test discipline — the
+# Chinese surface comes from the React layer's translation table; here
+# we hand back the English form (the i18n layer renders the localised
+# label and the API-detail line as a fallback / details disclosure).
+_TEST_OK_DETAIL = "The {provider} key works. You can run prompts that use it."
+_TEST_AUTH_DETAIL = (
+    "{provider} rejected the key. Check it in Settings — the value may be "
+    "wrong, revoked, or for a different organisation."
+)
+_TEST_RATE_DETAIL = (
+    "{provider} accepted the key but is rate-limiting you. Wait a moment and try again."
+)
+_TEST_NETWORK_DETAIL = (
+    "Aitap couldn't reach {provider}. Check your network connection and try again."
+)
+_TEST_OTHER_DETAIL = (
+    "{provider} returned an unexpected response. Try again; if it keeps "
+    "happening, capture the timestamp and contact your admin."
+)
+_TEST_NO_KEY_DETAIL = "No {provider} key is set. Add one in Settings before testing."
+_TEST_SDK_MISSING_DETAIL = (
+    # NOTE: deliberately static — never interpolate the wrapped
+    # ``ProviderError.__str__`` into the API body. SDK exception strings
+    # have historically embedded request payloads (including auth headers)
+    # on 4xx; we do not give them a wire path out of the server.
+    "Aitap can't talk to {provider} on this machine. The provider SDK may not "
+    "be installed — try `pip install 'aitap[{slug}]'`."
+)
+
+# Display names for use in user-facing copy. ``"openai".title()`` produces
+# ``"Openai"``, which reads like a typo. The map keeps the canonical
+# capitalisations consistent across the CLI, API, and UI.
+_PRETTY_PROVIDER_NAMES: dict[str, str] = {
+    "anthropic": "Anthropic",
+    "openai": "OpenAI",
+}
+
+
+def _pretty_provider(provider: str) -> str:
+    """Return ``provider`` in its canonical display form (e.g. ``OpenAI``)."""
+    return _PRETTY_PROVIDER_NAMES.get(provider, provider)
 
 
 # In-memory override store. Keyed by attribute name -> new value. Wiping the
@@ -55,7 +105,12 @@ def get_settings_endpoint(
     settings: Annotated[Settings, Depends(get_settings)],
     conn: Annotated[sqlite3.Connection, Depends(get_db)],
 ) -> SettingsResponse:
-    """Render the effective :class:`Settings` + detected providers as JSON."""
+    """Render the effective :class:`Settings` + detected providers as JSON.
+
+    The ``keys`` field is additive (CONTRACTS.md): each entry reports
+    the per-provider ``{configured, source, masked}`` triple from
+    :mod:`aitap.secrets`. The raw key value is never exposed.
+    """
     provider_name, model, judge_model = _effective_provider(settings)
     cost = _effective_cost(settings)
     providers = _read_detected_providers(conn)
@@ -66,6 +121,7 @@ def get_settings_endpoint(
         cost_per_run_usd=cost[0],
         cost_per_session_usd=cost[1],
         providers_available=providers,
+        keys=_collect_key_statuses(),
     )
 
 
@@ -93,6 +149,103 @@ def put_settings(
     if payload.cost_per_session_usd is not None:
         _MUTABLE_STATE["cost_per_session_usd"] = float(payload.cost_per_session_usd)
     return get_settings_endpoint(settings, conn)
+
+
+@router.post("/settings/key", response_model=ProviderKeyStatus)
+def set_provider_key(payload: SetKeyRequest) -> ProviderKeyStatus:
+    """Persist *payload.key* for *payload.provider*.
+
+    The response body is intentionally a :class:`ProviderKeyStatus` —
+    metadata only. We never echo the submitted key (not in the response,
+    not in the log filter, not in the SQLite store). The client should
+    immediately drop the typed-key React state on success and rely on
+    the returned masked preview.
+    """
+    try:
+        status = secrets_module.set_key(
+            payload.provider,
+            payload.key,
+            use_fallback=payload.use_fallback,
+        )
+    except ValueError as exc:
+        # Plain-language remediation, no stack trace, no key.
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from None
+    except secrets_module.KeyringUnavailableError:
+        # The OS keyring isn't usable on this machine (no Secret Service
+        # daemon, locked Keychain, etc.). The user hasn't opted into the
+        # file fallback yet; surface a 409 so the UI can show a confirm
+        # dialog and re-POST with use_fallback=True. The detail is a
+        # complete, plain-language sentence — no stack trace, no key,
+        # and crucially no internal exception message that could change
+        # across keyring versions.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Aitap can't reach your system keychain on this machine. "
+                "Save the key to a file in your home folder instead? "
+                "It will be readable only by you."
+            ),
+        ) from None
+    return _to_api_key_status(status)
+
+
+@router.delete("/settings/key/{provider}", response_model=ProviderKeyStatus)
+def delete_provider_key(provider: str) -> ProviderKeyStatus:
+    """Delete *provider*'s key from every store aitap manages.
+
+    Real delete (``keyring.delete_password`` / fallback-file entry
+    removal), not an overwrite. The response reflects whatever the
+    resolver sees afterwards — which may be ``source='env'`` if the
+    user also has the env var set; the UI uses that signal to remind
+    them to clear their shell config.
+    """
+    if provider not in secrets_module.supported_providers():
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unknown provider {provider!r}. Supported: "
+                + ", ".join(secrets_module.supported_providers())
+                + "."
+            ),
+        )
+    status = secrets_module.delete_key(provider)  # type: ignore[arg-type]
+    return _to_api_key_status(status)
+
+
+@router.post("/settings/test/{provider}", response_model=TestKeyResponse)
+async def test_provider_key(provider: str) -> TestKeyResponse:
+    """Probe *provider* with one minimal LLM call to confirm the key works.
+
+    Anthropic: ``/v1/messages`` with ``[{"role":"user","content":"ping"}]``
+    and ``max_tokens=4``. OpenAI: the equivalent ``chat.completions`` call.
+    The response is a :class:`TestKeyResponse` — never the raw key,
+    never a stack trace, never a status code in the message. The
+    ``detail`` field is the plain-language sentence the UI surfaces in
+    the test card.
+    """
+    if provider not in secrets_module.supported_providers():
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unknown provider {provider!r}. Supported: "
+                + ", ".join(secrets_module.supported_providers())
+                + "."
+            ),
+        )
+
+    # Bail early if there's nothing to test — saves a round-trip.
+    status = secrets_module.key_status(provider)  # type: ignore[arg-type]
+    if not status.configured:
+        return TestKeyResponse(
+            ok=False,
+            reason="auth",
+            detail=_TEST_NO_KEY_DETAIL.format(provider=_pretty_provider(provider)),
+        )
+
+    return await _run_connectivity_probe(provider)
 
 
 @router.get("/settings/cost-estimate", response_model=CostEstimateResponse)
@@ -337,6 +490,121 @@ def _flatten_payload_json(raw: str) -> str:
         if isinstance(text, str):
             parts.append(text)
     return "\n".join(parts)
+
+
+def _collect_key_statuses() -> list[ProviderKeyStatus]:
+    """Snapshot the per-provider key state for ``GET /api/settings``.
+
+    Reads through :mod:`aitap.secrets` only via :func:`key_status` —
+    the raw key never enters this code path.
+    """
+    return [
+        _to_api_key_status(secrets_module.key_status(provider))
+        for provider in secrets_module.supported_providers()
+    ]
+
+
+def _to_api_key_status(status: secrets_module.KeyStatus) -> ProviderKeyStatus:
+    """Convert the vault's dataclass into the pydantic API model.
+
+    Both shapes are intentionally identical; the conversion is a single
+    function so future contract drift is localised.
+    """
+    return ProviderKeyStatus(
+        provider=status.provider,
+        configured=status.configured,
+        source=status.source,
+        masked=status.masked,
+    )
+
+
+async def _run_connectivity_probe(provider: str) -> TestKeyResponse:
+    """Issue one minimal chat call to confirm the key works.
+
+    We import the LLM client lazily so a missing optional SDK doesn't
+    crash the route at import time — the user sees a plain-language
+    "other" detail instead. ``ProviderAuthError`` / ``RateLimitError``
+    map to the obvious ``reason`` slots; anything else lands in
+    ``"other"``.
+    """
+    from aitap.deep.client import (
+        ChatMessage,
+        ProviderAuthError,
+        ProviderError,
+        ProviderRateLimitError,
+        get_client,
+    )
+
+    # Pick a small, modern default model per provider so the probe
+    # actually completes. The user's configured model may not exist on
+    # the provider's most-restrictive tier; we pick the cheapest one
+    # known to be widely available.
+    probe_models: dict[str, str] = {
+        "anthropic": "claude-3-5-haiku-20241022",
+        "openai": "gpt-4o-mini",
+    }
+    model = probe_models.get(provider, "unknown")
+    pretty = _pretty_provider(provider)
+
+    try:
+        client = get_client(provider, model)
+    except ProviderError:
+        # Most likely "install the SDK". We deliberately do NOT interpolate
+        # the wrapped exception string into the response — historically
+        # provider SDKs have embedded request payloads (including auth
+        # headers) into their exception messages on 4xx responses. The
+        # detail stays static; the actual cause goes to the logs (the
+        # secret log filter strips any leaked key from the traceback).
+        _LOGGER.warning("probe for %s failed at client construction", provider, exc_info=True)
+        return TestKeyResponse(
+            ok=False,
+            reason="other",
+            detail=_TEST_SDK_MISSING_DETAIL.format(provider=pretty, slug=provider),
+        )
+
+    try:
+        await client.chat(
+            [ChatMessage(role="user", content="ping")],
+            max_tokens=4,
+        )
+    except ProviderAuthError:
+        return TestKeyResponse(
+            ok=False,
+            reason="auth",
+            detail=_TEST_AUTH_DETAIL.format(provider=pretty),
+        )
+    except ProviderRateLimitError:
+        return TestKeyResponse(
+            ok=False,
+            reason="rate_limit",
+            detail=_TEST_RATE_DETAIL.format(provider=pretty),
+        )
+    except ProviderError:
+        # Catches the generic ``ProviderError`` we wrap network-level
+        # SDK failures with. We treat unknown-cause errors as network
+        # for the UX (it's the most actionable category).
+        return TestKeyResponse(
+            ok=False,
+            reason="network",
+            detail=_TEST_NETWORK_DETAIL.format(provider=pretty),
+        )
+    except Exception:
+        # Final safety net so a bad SDK upgrade doesn't blow up the
+        # route. We log with ``exc_info=True`` so the cause is at least
+        # debuggable; the secret log filter strips any leaked key from
+        # the formatted traceback before it reaches an output handler.
+        _LOGGER.warning("probe for %s failed with unexpected error", provider, exc_info=True)
+        return TestKeyResponse(
+            ok=False,
+            reason="other",
+            detail=_TEST_OTHER_DETAIL.format(provider=pretty),
+        )
+
+    return TestKeyResponse(
+        ok=True,
+        reason=None,
+        detail=_TEST_OK_DETAIL.format(provider=pretty),
+    )
 
 
 __all__ = ["router"]

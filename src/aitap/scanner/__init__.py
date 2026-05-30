@@ -142,6 +142,40 @@ def _run_l2(result: ScanResult, *, auto_approve: bool, json_mode: bool) -> ScanR
         return result
 
     settings = Settings()
+
+    # Plain-language pre-check before paying the SDK construction cost.
+    # If the resolved provider has no key configured anywhere (vault,
+    # fallback file, env var), the L2 pass would fail at the first
+    # chat() call with a stack trace. Bail with one actionable sentence
+    # instead — see CLAUDE.md "Plain-language UI copy".
+    if settings.provider.name in ("anthropic", "openai"):
+        from aitap import secrets as secrets_module
+
+        key_status = secrets_module.key_status(settings.provider.name)  # type: ignore[arg-type]
+        if not key_status.configured:
+            if not json_mode:
+                # ``.title()`` produces "Openai" — reads like a typo. Use a
+                # tiny display map so the CLI message matches how each
+                # provider canonically capitalises its name.
+                pretty = {
+                    "anthropic": "Anthropic",
+                    "openai": "OpenAI",
+                }.get(settings.provider.name, settings.provider.name)
+                article = "an" if pretty[0].lower() in "aeiou" else "a"
+                env_var = (
+                    "ANTHROPIC_API_KEY"
+                    if settings.provider.name == "anthropic"
+                    else "OPENAI_API_KEY"
+                )
+                typer.secho(
+                    f"--deep needs {article} {pretty} key, but none is set. "
+                    f"Add one in `aitap ui -> Settings`, or export {env_var} "
+                    "in your shell. Skipping the deep pass and returning L1 results.",
+                    fg=typer.colors.YELLOW,
+                    err=True,
+                )
+            return result
+
     try:
         client = get_client(
             settings.provider.name,
