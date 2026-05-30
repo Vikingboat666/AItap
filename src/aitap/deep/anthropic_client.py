@@ -12,9 +12,9 @@ fails informatively only when the user actually tries to *use* anthropic.
 
 from __future__ import annotations
 
-import os
 from typing import TYPE_CHECKING, Any, Literal
 
+from aitap import secrets as _secrets
 from aitap.deep.client import (
     ChatMessage,
     ChatResponse,
@@ -114,9 +114,17 @@ class AnthropicClient(LLMClient):
         )
 
     def _resolve_api_key(self) -> str:
-        key = self.api_key or os.environ.get("ANTHROPIC_API_KEY")
+        # The vault module is the single owner of key reads — env-var
+        # fallback included. Going through ``secrets.get_key`` (instead
+        # of poking ``os.environ`` directly) means a UI-saved key in the
+        # OS keyring wins over a stale env var, which is what the user
+        # picked the most recently.
+        key = self.api_key or _secrets.get_key("anthropic")
         if not key:
-            raise ProviderAuthError("ANTHROPIC_API_KEY not set; pass api_key= or set the env var")
+            raise ProviderAuthError(
+                "No Anthropic API key set. Add one in aitap ui → Settings, "
+                "or export ANTHROPIC_API_KEY in your shell."
+            )
         return key
 
 

@@ -52,6 +52,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from aitap import secrets as _secrets
 from aitap.deep import client as client_module
 from aitap.deep.client import ChatResponse
 from aitap.playground.pipeline_runner import (
@@ -88,12 +89,21 @@ ClientFactory = Callable[[str, str], "LLMClient"]
 def _default_client_factory(provider: str, model: str) -> LLMClient:
     """Default factory: defer to :func:`aitap.deep.client.get_client`.
 
-    We do not pass an API key — providers fall back to env vars (which is
-    the documented contract for the deep package). Tests should override
-    this whole factory via :func:`set_client_factory` rather than try to
-    fake env vars.
+    We pull the API key from :mod:`aitap.secrets` (which itself falls
+    back to env vars) and hand it to the SDK constructor directly. This
+    is the *only* dispatch-layer call to ``secrets.get_key`` — see the
+    allow-list in ``tests/unit/test_secrets_import_discipline.py``.
+
+    Tests that want to bypass the vault should override this whole
+    factory via :func:`set_client_factory` and inject a mock client.
     """
-    return client_module.get_client(provider, model)
+    api_key: str | None = None
+    if provider in ("anthropic", "openai"):
+        # The narrow Literal cast is intentional — we already gated on
+        # provider being a vault-supported name, and the secrets module
+        # validates again at runtime.
+        api_key = _secrets.get_key(provider)  # type: ignore[arg-type]
+    return client_module.get_client(provider, model, api_key=api_key)
 
 
 # Mutable on purpose: the tests' set_client_factory swap. Kept lower-case so
