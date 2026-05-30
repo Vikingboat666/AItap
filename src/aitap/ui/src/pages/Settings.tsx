@@ -234,7 +234,18 @@ function DefaultsCard({
                   value={p}
                   className="sr-only"
                   checked={provider === p}
-                  onChange={() => setProvider(p)}
+                  onChange={() => {
+                    // Switching provider also clears the model and
+                    // judge-model inputs — keeping a Claude id selected
+                    // after switching to OpenAI (or vice-versa) would
+                    // let the user save a combination that can't run.
+                    // Same shape of footgun as the segment-ui target
+                    // switch in M5; we close it the same way.
+                    if (p === provider) return;
+                    setProvider(p);
+                    setModel("");
+                    setJudgeModel("");
+                  }}
                 />
                 {p === "anthropic" ? "Anthropic" : "OpenAI"}
               </label>

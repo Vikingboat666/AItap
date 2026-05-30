@@ -386,6 +386,48 @@ describe("DefaultsCard (Settings page → provider + model + judge_model)", () =
     });
   });
 
+  it("switching provider clears model + judge_model so a mismatched combo can't be saved", async () => {
+    // Regression for Opus review Nit 4: with provider=Anthropic +
+    // model=claude-sonnet-4-6 pre-filled, clicking the OpenAI radio
+    // must reset both inputs. Otherwise the next Save writes
+    // {provider: openai, model: claude-sonnet-4-6} to config.yaml — a
+    // combination that fails at the first chat() call. Same class of
+    // silent footgun as the M5 segment-ui pipeline-target switch.
+    server.use(
+      http.get("/api/settings", () =>
+        HttpResponse.json(
+          settingsBody({
+            provider: "anthropic",
+            model: "claude-sonnet-4-6",
+            judge_model: "claude-haiku-4-5",
+          }),
+        ),
+      ),
+    );
+    renderWithProviders(<Settings />);
+    const user = userEvent.setup();
+
+    const modelInput = await screen.findByLabelText(/^default model$/i);
+    const judgeInput = screen.getByLabelText(/^judge model.*$/i);
+
+    // Sanity: pre-filled from the GET response.
+    expect(modelInput).toHaveValue("claude-sonnet-4-6");
+    expect(judgeInput).toHaveValue("claude-haiku-4-5");
+
+    // Switching to OpenAI clears both — user must consciously pick a
+    // model that belongs to the new provider.
+    await user.click(screen.getByRole("radio", { name: /openai/i }));
+    expect(modelInput).toHaveValue("");
+    expect(judgeInput).toHaveValue("");
+
+    // Switching back to Anthropic does *not* re-fill from the server
+    // either — the user's "I want to start fresh on this provider"
+    // intent is preserved.
+    await user.click(screen.getByRole("radio", { name: /anthropic/i }));
+    expect(modelInput).toHaveValue("");
+    expect(judgeInput).toHaveValue("");
+  });
+
   it("switching provider swaps the model hint list", async () => {
     server.use(
       http.get("/api/settings", () =>
