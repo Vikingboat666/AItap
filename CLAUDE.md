@@ -27,6 +27,18 @@ The Web UI ships in **both English and 简体中文**. Every future UI change mu
 - Use named interpolation (`t("k", { count })`) — never string concatenation that breaks translation.
 - Chinese should read naturally and keep technical terms (prompt, pipeline, token, …) consistent.
 
+## Plain-language UI copy — non-negotiable
+
+Every user-facing string — UI text, CLI output, error messages, empty states, banners, tooltips — must be **直白易懂 / plain language**. The reader is a working developer, not a compiler.
+
+- **Use everyday words.** Prefer "No API key configured" over "Provider authentication is unconfigured". Prefer "Couldn't connect" over "Network transport unavailable".
+- **Tell them what to do next, not just what failed.** Bad: `401 Unauthorized`. Good: `Anthropic rejected the key — open Settings to fix it.` Empty states explain the cause + the next action: `No prompts found. Try `aitap scan` in your project root.`
+- **Active voice + short sentences.** One thought per line. Prefer "Aitap couldn't reach OpenAI" over "Connection to OpenAI could not be established".
+- **Never surface raw stack traces, status codes, or internal names** to end users. Map them to a human sentence; keep the technical detail in the expandable "details" / `pre` block.
+- **Same rule in 中文**: 用日常说法、避开术语堆砌、给出下一步动作。技术词（prompt / pipeline / token / 模板）必要时保留，但首次出现给一两句解释。en/zh 两版都要满足这条标准 —— 不是只英文要直白。
+- Applies to: `i18n/en.json` + `zh.json`, all `typer` CLI prints, `HTTPException(detail=...)` strings surfaced to the UI, exception messages that bubble up to the user, button labels, placeholders, tooltips, banners, toasts.
+- Code reviewers should call out copy that reads like an internal log line or a stack trace.
+
 ## Project structure / conventions
 
 See `CONTRACTS.md` for the cross-module contracts (frozen files), `CONTRIBUTING.md` for workflow, and `WORKTREES.md` for the parallel-worktree development pattern.
