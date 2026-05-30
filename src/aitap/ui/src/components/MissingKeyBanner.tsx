@@ -19,18 +19,11 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 
-import type { ProviderKeyStatus } from "../api/settings-keys";
+import { apiClient } from "../api/client";
+import type { SettingsResponse } from "../api/generated/models/SettingsResponse";
 
-type SettingsWithKeys = { keys?: ProviderKeyStatus[] };
-
-async function fetchSettings(): Promise<SettingsWithKeys> {
-  const res = await fetch("/api/settings", {
-    headers: { Accept: "application/json" },
-  });
-  if (!res.ok) {
-    throw new Error(`HTTP ${res.status} ${res.statusText}`);
-  }
-  return (await res.json()) as SettingsWithKeys;
+function fetchSettings(): Promise<SettingsResponse> {
+  return apiClient.settings.getSettingsEndpointApiSettingsGet();
 }
 
 export function MissingKeyBanner() {

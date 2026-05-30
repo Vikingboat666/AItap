@@ -31,6 +31,8 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
+import { apiClient } from "../api/client";
+import type { SettingsResponse } from "../api/generated/models/SettingsResponse";
 import { Badge, Card, CardHeader, EmptyState } from "../components/primitives";
 import { ErrorState } from "../components/feedback";
 import { ListSkeleton } from "../components/skeletons";
@@ -44,11 +46,6 @@ import {
   testProviderKey,
 } from "../api/settings-keys";
 
-/** Local extension of the generated `SettingsResponse` until gen:api runs. */
-type SettingsWithKeys = {
-  keys?: ProviderKeyStatus[];
-};
-
 const PROVIDERS: ProviderName[] = ["anthropic", "openai"];
 
 const ENV_VAR_NAMES: Record<ProviderName, string> = {
@@ -56,19 +53,8 @@ const ENV_VAR_NAMES: Record<ProviderName, string> = {
   openai: "OPENAI_API_KEY",
 };
 
-/**
- * Pull the settings shape the SDK already exposes, but tolerate the
- * absence of the new `keys` field — that field arrives once
- * `pnpm gen:api` regenerates the client.
- */
-async function fetchSettings(): Promise<SettingsWithKeys> {
-  const res = await fetch("/api/settings", {
-    headers: { Accept: "application/json" },
-  });
-  if (!res.ok) {
-    throw new Error(`HTTP ${res.status} ${res.statusText}`);
-  }
-  return (await res.json()) as SettingsWithKeys;
+function fetchSettings(): Promise<SettingsResponse> {
+  return apiClient.settings.getSettingsEndpointApiSettingsGet();
 }
 
 export function Settings() {
@@ -92,9 +78,9 @@ export function Settings() {
     );
   }
 
-  const data = settingsQ.data ?? {};
+  const keys = settingsQ.data?.keys ?? [];
   const keyMap = new Map<ProviderName, ProviderKeyStatus>(
-    (data.keys ?? []).map((k) => [k.provider, k]),
+    keys.map((k) => [k.provider, k]),
   );
 
   return (
