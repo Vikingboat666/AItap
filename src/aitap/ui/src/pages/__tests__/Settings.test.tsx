@@ -35,14 +35,20 @@ import { server } from "../../setupTests";
 const FAKE_ANTHROPIC = "sk-ant-FAKE-aaaaaaaaaaaaaaaa";
 
 function settingsBody(
-  configured: { anthropic?: boolean; openai?: boolean } = {},
+  configured: {
+    anthropic?: boolean;
+    openai?: boolean;
+    provider?: "anthropic" | "openai";
+    model?: string;
+    judge_model?: string | null;
+  } = {},
 ) {
   return {
     cost_per_run_usd: 0.01,
     cost_per_session_usd: 0.05,
-    judge_model: null,
-    model: "gpt-4o-mini",
-    provider: "openai",
+    judge_model: configured.judge_model ?? null,
+    model: configured.model ?? "gpt-4o-mini",
+    provider: configured.provider ?? "openai",
     providers_available: [],
     keys: [
       {
@@ -70,11 +76,17 @@ describe("Settings page", () => {
     server.use(http.get("/api/settings", () => HttpResponse.json(settingsBody())));
     renderWithProviders(<Settings />);
 
-    expect(await screen.findByText("Anthropic")).toBeInTheDocument();
-    expect(screen.getByText("OpenAI")).toBeInTheDocument();
+    // The provider key inputs uniquely identify each ProviderCard
+    // (the bare "Anthropic"/"OpenAI" text is shared with the
+    // DefaultsCard radio above — both are valid UI).
+    expect(
+      await screen.findByLabelText(/api key for anthropic/i),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText(/api key for openai/i)).toBeInTheDocument();
 
-    // Save buttons start disabled (nothing typed yet).
-    const saveButtons = screen.getAllByRole("button", { name: /save/i });
+    // Per-provider Save buttons start disabled (nothing typed yet).
+    // ``^save$`` excludes the DefaultsCard's "Save defaults" button.
+    const saveButtons = screen.getAllByRole("button", { name: /^save$/i });
     expect(saveButtons[0]).toBeDisabled();
   });
 
@@ -101,7 +113,8 @@ describe("Settings page", () => {
     await user.type(input, FAKE_ANTHROPIC);
     expect(input).toHaveValue(FAKE_ANTHROPIC);
 
-    const saveButtons = screen.getAllByRole("button", { name: /save/i });
+    // ``^save$`` excludes the DefaultsCard's "Save defaults" button.
+    const saveButtons = screen.getAllByRole("button", { name: /^save$/i });
     await user.click(saveButtons[0]);
 
     await waitFor(() => {
@@ -304,6 +317,111 @@ describe("MissingKeyBanner", () => {
     // Wait for the prompts to render — the inventory takes a tick.
     await screen.findByText("alpha_prompt");
     expect(screen.queryByText(/no api key is set/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("DefaultsCard (Settings page → provider + model + judge_model)", () => {
+  it("PUTs provider + model + judge_model when Save defaults is clicked", async () => {
+    const seenPuts: Array<Record<string, unknown>> = [];
+    server.use(
+      http.get("/api/settings", () =>
+        HttpResponse.json(
+          settingsBody({
+            provider: "anthropic",
+            model: "claude-sonnet-4-6",
+            judge_model: null,
+          }),
+        ),
+      ),
+      http.put("/api/settings", async ({ request }) => {
+        const body = (await request.json()) as Record<string, unknown>;
+        seenPuts.push(body);
+        return HttpResponse.json(
+          settingsBody({
+            provider: body.provider as "anthropic" | "openai",
+            model: (body.model as string) ?? "claude-sonnet-4-6",
+            judge_model: (body.judge_model as string | null) ?? null,
+          }),
+        );
+      }),
+    );
+
+    renderWithProviders(<Settings />);
+    const user = userEvent.setup();
+
+    // Pre-filled from the GET response. ``^default model$`` is exact —
+    // the broader regex would also match the hint buttons' aria-labels.
+    const modelInput = await screen.findByLabelText(/^default model$/i);
+    expect(modelInput).toHaveValue("claude-sonnet-4-6");
+
+    // Switch provider to OpenAI via the radio.
+    await user.click(screen.getByRole("radio", { name: /openai/i }));
+
+    // Click a model hint to populate the model field (the aria-label
+    // distinguishes the model row's hints from the judge row's).
+    await user.click(
+      screen.getByRole("button", {
+        name: /use gpt-4o-mini as the default model/i,
+      }),
+    );
+    expect(modelInput).toHaveValue("gpt-4o-mini");
+
+    // Type a judge model.
+    const judgeInput = screen.getByLabelText(/^judge model.*$/i);
+    await user.clear(judgeInput);
+    await user.type(judgeInput, "gpt-4o");
+
+    // Save.
+    await user.click(screen.getByRole("button", { name: /save defaults/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/^saved\.$/i)).toBeInTheDocument();
+    });
+
+    expect(seenPuts).toHaveLength(1);
+    expect(seenPuts[0]).toMatchObject({
+      provider: "openai",
+      model: "gpt-4o-mini",
+      judge_model: "gpt-4o",
+    });
+  });
+
+  it("switching provider swaps the model hint list", async () => {
+    server.use(
+      http.get("/api/settings", () =>
+        HttpResponse.json(
+          settingsBody({ provider: "anthropic", model: "claude-sonnet-4-6" }),
+        ),
+      ),
+    );
+    renderWithProviders(<Settings />);
+    const user = userEvent.setup();
+
+    // Anthropic hints are visible by default — the model-row aria-label
+    // uniquely identifies one of the two rows (model vs judge).
+    expect(
+      await screen.findByRole("button", {
+        name: /use claude-sonnet-4-6 as the default model/i,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", {
+        name: /use gpt-4o-mini as the default model/i,
+      }),
+    ).toBeNull();
+
+    // After switching to OpenAI, the hints flip.
+    await user.click(screen.getByRole("radio", { name: /openai/i }));
+    expect(
+      screen.getByRole("button", {
+        name: /use gpt-4o-mini as the default model/i,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", {
+        name: /use claude-sonnet-4-6 as the default model/i,
+      }),
+    ).toBeNull();
   });
 });
 
