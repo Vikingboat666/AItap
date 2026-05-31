@@ -38,12 +38,18 @@ from aitap.scanner.models import (
 )
 from aitap.server.routes import (
     CostEstimateResponse,
+    Defaults,
     ProviderKeyStatus,
     SetKeyRequest,
     SettingsResponse,
     SettingsUpdate,
     TestKeyResponse,
 )
+
+# Local import to avoid the circular profiles ↔ settings dance at module
+# load. The profiles router owns the canonical ``_defaults`` cache and
+# exposes ``current_defaults`` / ``set_defaults`` helpers we delegate to.
+from aitap.server.routes import profiles as profiles_routes
 from aitap.server.routes._deps import get_db, get_settings
 
 router = APIRouter(tags=["settings"])
@@ -190,6 +196,7 @@ def get_settings_endpoint(
         cost_per_session_usd=cost[1],
         providers_available=providers,
         keys=_collect_key_statuses(),
+        defaults=profiles_routes.current_defaults(settings),
     )
 
 
@@ -232,6 +239,22 @@ def put_settings(
         )
 
     return get_settings_endpoint(settings, conn)
+
+
+@router.put("/settings/defaults", response_model=Defaults)
+def put_settings_defaults(
+    payload: Defaults,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Defaults:
+    """Pick which configured profiles are the default model + judge.
+
+    The route delegates validation + persistence to
+    :func:`aitap.server.routes.profiles.set_defaults` so the in-process
+    cache and the YAML mirror stay in lockstep. 422 + plain-language
+    detail when a referenced profile id doesn't exist; ``None`` on
+    either field clears the corresponding default.
+    """
+    return profiles_routes.set_defaults(settings, payload)
 
 
 @router.post("/settings/key", response_model=ProviderKeyStatus)

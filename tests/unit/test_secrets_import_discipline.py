@@ -1,16 +1,22 @@
-"""Guard the "only LLM-client construction may import ``secrets.get_key``" rule.
+"""Guard the "only LLM-client construction may import the raw-key getters" rule.
 
-The :func:`aitap.secrets.get_key` function is the **only** way to read a
-raw API key out of the vault. To keep the blast radius small, we enforce
-that only a tiny allow-list of modules can import it — anything else
-must go through :func:`aitap.secrets.key_status` (which never returns the
-key) or take the key as a constructor arg.
+Two functions return raw secrets out of the vault:
+
+- :func:`aitap.secrets.get_key` — the legacy provider-keyed getter.
+- :func:`aitap.secrets.get_key_for_profile` — the new profile-keyed
+  getter added in the multi-provider redesign.
+
+Both are restricted to the same small allow-list of LLM-client
+construction modules — anything else must go through the metadata
+status helpers (which never return the raw key) or take the key as a
+constructor arg.
 
 This test walks every ``.py`` file under ``src/aitap/`` with the stdlib
-:mod:`ast` module, finds every reference to ``get_key`` that originates
-from ``aitap.secrets``, and asserts the *file* it lives in is on the
-allow-list. New call sites must be added here on purpose — the failure
-message tells the maintainer exactly which file needs review.
+:mod:`ast` module, finds every reference to either getter that
+originates from ``aitap.secrets``, and asserts the *file* it lives in
+is on the allow-list. New call sites must be added here on purpose —
+the failure message tells the maintainer exactly which file needs
+review.
 
 If a future refactor moves the LLM-client factories around, edit the
 ``_ALLOWED_FILES`` set + write a comment explaining why the new module
@@ -44,6 +50,18 @@ _ALLOWED_FILES: frozenset[str] = frozenset(
     }
 )
 
+# Files allowed to import :func:`aitap.secrets.get_key_for_profile`.
+# Deliberately empty in this worktree: wt/profile-client adds the
+# OpenAI-compat / Anthropic clients to this list when it lands. Keeping
+# the allow-list empty now means the test catches any premature wiring
+# of the new getter — the staged rollout depends on that discipline.
+_ALLOWED_FILES_PROFILE: frozenset[str] = frozenset(
+    {
+        # Defining module is trivially allowed.
+        "secrets.py",
+    }
+)
+
 
 def _iter_source_files() -> list[Path]:
     """Walk ``src/aitap/`` and yield every ``.py`` we care about.
@@ -69,14 +87,14 @@ def _iter_source_files() -> list[Path]:
     return out
 
 
-def _files_importing_get_key() -> set[str]:
-    """Return the relative paths (under ``src/aitap/``) that touch ``secrets.get_key``.
+def _files_importing(symbol: str) -> set[str]:
+    """Return the relative paths (under ``src/aitap/``) that touch ``secrets.<symbol>``.
 
     We treat any of these as a "touch":
 
-    - ``from aitap.secrets import get_key`` (any alias)
-    - ``from aitap import secrets`` + a later ``secrets.get_key`` attribute
-    - ``import aitap.secrets`` + a later ``aitap.secrets.get_key`` attribute
+    - ``from aitap.secrets import <symbol>`` (any alias)
+    - ``from aitap import secrets`` + a later ``secrets.<symbol>`` attribute
+    - ``import aitap.secrets`` + a later ``aitap.secrets.<symbol>`` attribute
 
     Anything more obscure (``getattr(secrets_module, "get_" + "key")``)
     is intentionally outside the scope of this test — we trust the code
@@ -95,14 +113,14 @@ def _files_importing_get_key() -> set[str]:
         # Names by which ``aitap.secrets`` is visible inside this file.
         # The default empty set means "module not imported".
         module_aliases: set[str] = set()
-        direct_get_key = False
+        direct_import = False
 
         for node in ast.walk(tree):
-            # ``from aitap.secrets import get_key [as alias]``
+            # ``from aitap.secrets import <symbol> [as alias]``
             if isinstance(node, ast.ImportFrom) and node.module == "aitap.secrets":
                 for alias in node.names:
-                    if alias.name == "get_key":
-                        direct_get_key = True
+                    if alias.name == symbol:
+                        direct_import = True
             # ``from aitap import secrets [as alias]``
             if isinstance(node, ast.ImportFrom) and node.module == "aitap":
                 for alias in node.names:
@@ -114,17 +132,17 @@ def _files_importing_get_key() -> set[str]:
                     if alias.name == "aitap.secrets":
                         module_aliases.add(alias.asname or "aitap.secrets")
 
-        if direct_get_key:
+        if direct_import:
             offenders.add(_relpath(src))
             continue
 
-        # If the module was aliased, look for ``<alias>.get_key`` access.
+        # If the module was aliased, look for ``<alias>.<symbol>`` access.
         if module_aliases:
             for node in ast.walk(tree):
-                if isinstance(node, ast.Attribute) and node.attr == "get_key":
+                if isinstance(node, ast.Attribute) and node.attr == symbol:
                     value = node.value
                     # Resolve the longest dotted prefix on the LHS so we
-                    # match ``aitap.secrets.get_key`` even though it's a
+                    # match ``aitap.secrets.<symbol>`` even though it's a
                     # two-step Attribute chain.
                     chain: list[str] = []
                     cursor: ast.AST = value
@@ -144,17 +162,40 @@ def _files_importing_get_key() -> set[str]:
     return offenders
 
 
+def _files_importing_get_key() -> set[str]:
+    """Backward-compatible name; defers to :func:`_files_importing`."""
+    return _files_importing("get_key")
+
+
 def _relpath(path: Path) -> str:
     return path.relative_to(SRC_ROOT).as_posix()
 
 
 def test_get_key_callers_are_on_the_allow_list() -> None:
-    touched = _files_importing_get_key()
+    touched = _files_importing("get_key")
     forbidden = touched - _ALLOWED_FILES
     assert not forbidden, (
         "aitap.secrets.get_key was imported by files outside the allow-list "
         f"({sorted(forbidden)}). Either route the call through key_status() "
         "or add the file to _ALLOWED_FILES in this test with a justifying comment."
+    )
+
+
+def test_get_key_for_profile_callers_are_on_the_allow_list() -> None:
+    """Same discipline as :func:`test_get_key_callers_are_on_the_allow_list`,
+    applied to the new profile-keyed getter. The allow-list is intentionally
+    empty in this worktree — wt/profile-client is the first one to add a
+    legitimate caller (the LLM client factory). Any unexpected hit here
+    means a downstream worktree is wiring through the secrets module
+    earlier than the staged plan permits."""
+    touched = _files_importing("get_key_for_profile")
+    forbidden = touched - _ALLOWED_FILES_PROFILE
+    assert not forbidden, (
+        "aitap.secrets.get_key_for_profile was imported by files outside "
+        f"the allow-list ({sorted(forbidden)}). The profile-keyed getter "
+        "is reserved for the LLM client construction path — route the "
+        "call through key_status_for_profile() or add the file to "
+        "_ALLOWED_FILES_PROFILE with a justifying comment."
     )
 
 
@@ -164,5 +205,14 @@ def test_allow_list_entries_exist() -> None:
     missing = [rel for rel in _ALLOWED_FILES if not (SRC_ROOT / rel).is_file()]
     assert not missing, (
         f"_ALLOWED_FILES references files that no longer exist: {missing}. "
+        "Update the allow-list to match the current layout."
+    )
+
+
+def test_profile_allow_list_entries_exist() -> None:
+    """Same stale-entry guard for the profile-keyed allow-list."""
+    missing = [rel for rel in _ALLOWED_FILES_PROFILE if not (SRC_ROOT / rel).is_file()]
+    assert not missing, (
+        f"_ALLOWED_FILES_PROFILE references files that no longer exist: {missing}. "
         "Update the allow-list to match the current layout."
     )

@@ -58,6 +58,12 @@ import yaml
 
 Provider = Literal["anthropic", "openai"]
 KeySource = Literal["keyring", "fallback", "env", "none"]
+# Narrower variant for profile-id keys: env vars are tied to *provider*
+# names (ANTHROPIC_API_KEY, OPENAI_API_KEY), so a profile-id resolver
+# can only return keyring / fallback / none. Exposing the tighter union
+# lets the route layer surface ``Profile.key_source`` without the dead
+# "env" arm that callers would never see.
+ProfileKeySource = Literal["keyring", "fallback", "none"]
 
 # Canonical provider list — single source of truth for the rest of the
 # module. Adding a third provider means adding it here + the env var map
@@ -85,6 +91,23 @@ class KeyStatus:
     provider: Provider
     configured: bool
     source: KeySource
+    masked: str | None
+
+
+@dataclass(frozen=True)
+class ProfileKeyStatus:
+    """Metadata describing whether/where a profile's key lives.
+
+    The profile-keyed counterpart to :class:`KeyStatus`. Used by the new
+    multi-provider redesign (``docs/profiles-design.md``); the legacy
+    :class:`KeyStatus` is kept until wt/profile-cleanup removes it.
+
+    ``profile_id`` is the documented slug, not the free-text label.
+    """
+
+    profile_id: str
+    configured: bool
+    source: ProfileKeySource
     masked: str | None
 
 
@@ -194,6 +217,33 @@ def _write_fallback(data: dict[str, str]) -> None:
 def _account(provider: Provider) -> str:
     """The keyring 'account' part — namespaced per provider."""
     return f"provider:{provider}"
+
+
+def _profile_account(profile_id: str) -> str:
+    """The keyring 'account' part — namespaced per profile id.
+
+    Mirrors :func:`_account` for the new multi-provider redesign. The
+    ``profile:<id>`` convention coexists with the legacy ``provider:<name>``
+    one in the same keyring service until wt/profile-cleanup retires
+    the latter.
+    """
+    return f"profile:{profile_id}"
+
+
+def _validate_profile_id(profile_id: str) -> str:
+    """Reject blank profile ids with a plain-language error.
+
+    Returns the trimmed id so callers can rely on a canonical value.
+    Anything non-empty is accepted here — the slugify algorithm in
+    ``server/routes/profiles.py`` enforces the documented character
+    rules at write time, so by the time a value reaches this layer it
+    is already normalised. We still guard against the empty / whitespace
+    cases because the keyring backend would happily store under
+    ``profile:`` and that would be a security-relevant footgun.
+    """
+    if not profile_id or not profile_id.strip():
+        raise ValueError("profile id cannot be empty")
+    return profile_id
 
 
 # ---------------------------------------------------------------------------
@@ -424,6 +474,195 @@ def delete_key(provider: Provider) -> KeyStatus:
 
 
 # ---------------------------------------------------------------------------
+# Profile-keyed API (new multi-provider redesign)
+#
+# The four functions below mirror the provider-keyed surface above but
+# use the documented ``profile:<id>`` account convention. They are
+# additive: the legacy provider-keyed functions still exist and still
+# write under ``provider:<name>``. wt/profile-cleanup retires the
+# legacy surface once all callers migrate. See ``docs/profiles-design.md``
+# §"secrets module changes" for the full migration story.
+# ---------------------------------------------------------------------------
+
+
+def key_status_for_profile(profile_id: str) -> ProfileKeyStatus:
+    """Report what aitap knows about *profile_id*'s key without leaking it.
+
+    Resolution order matches :func:`get_key_for_profile`:
+
+    1. Keyring (preferred), account ``profile:<id>``.
+    2. Fallback ``~/.aitap/secrets.yaml`` under the same key string.
+    3. Nothing.
+
+    Unlike the legacy provider-keyed :func:`key_status`, there is no
+    env-var fallback — env vars are tied to specific provider names
+    (``ANTHROPIC_API_KEY``, ``OPENAI_API_KEY``), but a profile id is a
+    user-defined slug. The route layer is welcome to surface env vars
+    as a separate signal at the UI level, but they aren't part of the
+    per-profile resolution path.
+    """
+    profile_id = _validate_profile_id(profile_id)
+
+    if _keyring_usable():
+        keyring = _keyring_module()
+        try:
+            raw = keyring.get_password(  # type: ignore[attr-defined]
+                _KEYRING_SERVICE, _profile_account(profile_id)
+            )
+        except Exception:
+            raw = None
+        if raw:
+            return ProfileKeyStatus(
+                profile_id=profile_id,
+                configured=True,
+                source="keyring",
+                masked=_mask(raw),
+            )
+
+    fallback = _read_fallback()
+    fallback_value = fallback.get(_profile_account(profile_id))
+    if fallback_value:
+        return ProfileKeyStatus(
+            profile_id=profile_id,
+            configured=True,
+            source="fallback",
+            masked=_mask(fallback_value),
+        )
+
+    return ProfileKeyStatus(profile_id=profile_id, configured=False, source="none", masked=None)
+
+
+def get_key_for_profile(profile_id: str) -> str | None:
+    """Return the raw API key for *profile_id*, or ``None``.
+
+    **Restricted import:** same allow-list policy as :func:`get_key`.
+    Only the LLM-client construction path may call this; see
+    ``tests/unit/test_secrets_import_discipline.py`` for the AST scan
+    that enforces the rule. At time of writing the allow-list is empty
+    for the new function — wt/profile-client adds callers once it
+    rewires the dispatch layer.
+
+    Resolution order: keyring → fallback file. No env-var path
+    (see :func:`key_status_for_profile` for why).
+    """
+    profile_id = _validate_profile_id(profile_id)
+
+    if _keyring_usable():
+        keyring = _keyring_module()
+        try:
+            raw = keyring.get_password(  # type: ignore[attr-defined]
+                _KEYRING_SERVICE, _profile_account(profile_id)
+            )
+        except Exception:
+            raw = None
+        if raw:
+            return raw
+
+    fallback = _read_fallback()
+    account = _profile_account(profile_id)
+    if fallback.get(account):
+        return fallback[account]
+
+    return None
+
+
+def set_key_for_profile(
+    profile_id: str, key: str, *, use_fallback: bool = False
+) -> ProfileKeyStatus:
+    """Persist *key* for *profile_id*. Mirrors :func:`set_key` exactly.
+
+    Args:
+        profile_id: the documented slug (lower-case ASCII, ``-``/``_``).
+        key: the raw secret — never logged, never echoed back.
+        use_fallback: when True, write to ``~/.aitap/secrets.yaml``.
+            The UI should only set this after explicitly asking the
+            user to confirm (the API layer surfaces a 409 + confirm
+            dialog when the keyring is down so the user makes that
+            choice consciously — same flow as PR #35).
+
+    Same security contract as :func:`set_key`:
+
+    - ``use_fallback=False`` + keyring healthy → writes to keyring.
+    - ``use_fallback=False`` + keyring down or write fails →
+      :class:`KeyringUnavailableError`, **nothing touches disk**.
+    - ``use_fallback=True`` → writes to ``~/.aitap/secrets.yaml``.
+    """
+    profile_id = _validate_profile_id(profile_id)
+    if not key or not key.strip():
+        raise ValueError("API key cannot be empty")
+
+    if not use_fallback:
+        if not _keyring_usable():
+            raise KeyringUnavailableError("Aitap can't reach your system keychain on this machine.")
+        keyring = _keyring_module()
+        try:
+            keyring.set_password(  # type: ignore[attr-defined]
+                _KEYRING_SERVICE, _profile_account(profile_id), key
+            )
+        except Exception as exc:
+            # Same security contract as :func:`set_key`: no silent file
+            # write on a runtime keyring failure. The API layer maps
+            # this to a 409 + UI confirmation dialog.
+            raise KeyringUnavailableError(
+                "Aitap couldn't write the key to your system keychain."
+            ) from exc
+        return ProfileKeyStatus(
+            profile_id=profile_id,
+            configured=True,
+            source="keyring",
+            masked=_mask(key),
+        )
+
+    # Explicit opt-in: the UI has confirmed the fallback path.
+    fallback = _read_fallback()
+    fallback[_profile_account(profile_id)] = key
+    _write_fallback(fallback)
+    return ProfileKeyStatus(
+        profile_id=profile_id,
+        configured=True,
+        source="fallback",
+        masked=_mask(key),
+    )
+
+
+def delete_key_for_profile(profile_id: str) -> ProfileKeyStatus:
+    """Remove *profile_id*'s key from every source aitap manages.
+
+    Real delete (``keyring.delete_password`` / fallback-file entry
+    removal), not an overwrite-with-empty — so a forensic look at the
+    credential store doesn't find a stub entry. Returns the post-delete
+    :class:`ProfileKeyStatus` so callers can immediately reflect the
+    new state in the UI without a second status round-trip.
+    """
+    profile_id = _validate_profile_id(profile_id)
+    account = _profile_account(profile_id)
+
+    if _keyring_usable():
+        keyring = _keyring_module()
+        # Same as the legacy delete: silence ``PasswordDeleteError`` for
+        # "no such entry". Deleting a never-saved key is not a failure.
+        with contextlib.suppress(Exception):
+            keyring.delete_password(_KEYRING_SERVICE, account)  # type: ignore[attr-defined]
+
+    fallback = _read_fallback()
+    if account in fallback:
+        del fallback[account]
+        if fallback:
+            _write_fallback(fallback)
+        else:
+            # Empty dict → remove the file rather than leave a zero-byte
+            # artifact on disk. Mirrors the legacy delete behaviour.
+            path = _fallback_path()
+            if path.exists():
+                try:
+                    path.unlink()
+                except OSError:
+                    _write_fallback(fallback)
+
+    return key_status_for_profile(profile_id)
+
+
+# ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
 
@@ -530,11 +769,16 @@ __all__ = [
     "KeySource",
     "KeyStatus",
     "KeyringUnavailableError",
+    "ProfileKeyStatus",
     "Provider",
     "delete_key",
+    "delete_key_for_profile",
     "get_key",
+    "get_key_for_profile",
     "install_log_filter",
     "key_status",
+    "key_status_for_profile",
     "set_key",
+    "set_key_for_profile",
     "supported_providers",
 ]
