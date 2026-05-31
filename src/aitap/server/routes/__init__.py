@@ -280,6 +280,19 @@ class ProviderKeyStatus(_ApiModel):
     masked: str | None = None  # e.g. "sk-ant-...XXXX"; null when unconfigured
 
 
+class Defaults(_ApiModel):
+    """Per-process default profile selections for runs and the judge.
+
+    ``None`` on either field is the documented "no default chosen yet"
+    state. The Settings page surfaces it with a yellow Inventory banner
+    (Decision 1 in ``docs/profiles-design.md``). The same shape is the
+    request body for ``PUT /api/settings/defaults``.
+    """
+
+    model_profile_id: str | None = None
+    judge_profile_id: str | None = None
+
+
 class SettingsResponse(_ApiModel):
     provider: Provider
     model: str
@@ -290,6 +303,12 @@ class SettingsResponse(_ApiModel):
     # Additive: per-provider key status. Default empty so old clients
     # that don't ask about it still get a well-shaped response.
     keys: list[ProviderKeyStatus] = Field(default_factory=list)
+    # Additive: per-process default profile selections. Both fields are
+    # nullable; ``None`` is the documented "no default chosen" sentinel,
+    # surfaced as a yellow Inventory banner (Decision 1 in
+    # ``docs/profiles-design.md``). Default is an empty Defaults so old
+    # clients that don't ask about it still get a well-shaped response.
+    defaults: Defaults = Field(default_factory=lambda: Defaults())
 
 
 class SettingsUpdate(_ApiModel):
@@ -362,19 +381,6 @@ class Profile(_ApiModel):
     key_configured: bool
     key_source: Literal["keyring", "fallback", "env", "none"]
     key_masked: str | None = None
-
-
-class Defaults(_ApiModel):
-    """Per-process default profile selections for runs and the judge.
-
-    ``None`` on either field is the documented "no default chosen yet"
-    state. The Settings page surfaces it with a yellow Inventory banner
-    (Decision 1 in ``docs/profiles-design.md``). The same shape is the
-    request body for ``PUT /api/settings/defaults``.
-    """
-
-    model_profile_id: str | None = None
-    judge_profile_id: str | None = None
 
 
 class ProfileUpsertRequest(_ApiModel):

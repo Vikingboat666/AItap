@@ -422,6 +422,83 @@ def test_create_profile_with_key_409s_when_keyring_unavailable_no_opt_in(
     assert c.get("/api/profiles").json() == []
 
 
+# ---------------------------------------------------------------------------
+# Checkpoint 4: PUT /api/settings/defaults + GET /api/settings exposes them
+# ---------------------------------------------------------------------------
+
+
+def test_get_settings_exposes_defaults_field(
+    client: tuple[TestClient, _FakeKeyring, Settings],
+) -> None:
+    """``GET /api/settings`` includes a ``defaults`` block — additive field."""
+    c, _, _ = client
+    res = c.get("/api/settings")
+    assert res.status_code == 200
+    body = res.json()
+    assert "defaults" in body
+    assert body["defaults"] == {
+        "model_profile_id": None,
+        "judge_profile_id": None,
+    }
+
+
+def test_put_defaults_picks_a_configured_profile_and_persists(
+    client: tuple[TestClient, _FakeKeyring, Settings],
+) -> None:
+    """The UI's "save defaults" round-trip: PUT writes; GET reflects."""
+    c, _, _ = client
+    profile = c.post("/api/profiles", json=_body_for(label="DeepSeek")).json()
+    pid = profile["id"]
+
+    res = c.put(
+        "/api/settings/defaults",
+        json={"model_profile_id": pid, "judge_profile_id": pid},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body == {"model_profile_id": pid, "judge_profile_id": pid}
+
+    # GET sees the same.
+    later = c.get("/api/settings").json()
+    assert later["defaults"] == {
+        "model_profile_id": pid,
+        "judge_profile_id": pid,
+    }
+
+
+def test_put_defaults_422s_when_referenced_profile_doesnt_exist(
+    client: tuple[TestClient, _FakeKeyring, Settings],
+) -> None:
+    """Pointing defaults at a non-existent profile id is a 422 with a
+    plain-language remediation, not a 500."""
+    c, _, _ = client
+    res = c.put(
+        "/api/settings/defaults",
+        json={"model_profile_id": "ghost-profile", "judge_profile_id": None},
+    )
+    assert res.status_code == 422, res.text
+    detail = res.json()["detail"]
+    assert "ghost-profile" in detail
+    assert "Settings" in detail  # tells the user where to go next
+
+
+def test_put_defaults_accepts_null_judge_to_reuse_default(
+    client: tuple[TestClient, _FakeKeyring, Settings],
+) -> None:
+    """``judge_profile_id: null`` is the documented "reuse default" sentinel."""
+    c, _, _ = client
+    profile = c.post("/api/profiles", json=_body_for(label="DeepSeek")).json()
+
+    res = c.put(
+        "/api/settings/defaults",
+        json={"model_profile_id": profile["id"], "judge_profile_id": None},
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["model_profile_id"] == profile["id"]
+    assert body["judge_profile_id"] is None
+
+
 def test_create_profile_with_explicit_fallback_succeeds_when_keyring_down(
     client: tuple[TestClient, _FakeKeyring, Settings],
     tmp_path: Path,

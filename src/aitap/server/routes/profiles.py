@@ -51,6 +51,7 @@ from aitap import secrets as secrets_module
 from aitap.config import DefaultsConfig, ProfileConfig, Settings
 from aitap.config_io import load_profiles_from_yaml, save_profiles_to_yaml
 from aitap.server.routes import (
+    Defaults,
     Profile,
     ProfileTestResponse,
     ProfileUpsertRequest,
@@ -203,6 +204,63 @@ def _persist(settings: Settings) -> None:
         # still returns 200 because the in-process cache is the source
         # of truth for the rest of this server lifetime.
         _LOGGER.debug("profile persistence skipped (in-memory only)")
+
+
+# ---------------------------------------------------------------------------
+# Defaults — read / write across module boundaries
+#
+# These helpers are the only public surface the settings router uses to
+# read / mutate ``_DEFAULTS``. Keeping the mutation inside this module
+# means the in-process cache + the YAML mirror stay in lockstep
+# regardless of which router triggered the change.
+# ---------------------------------------------------------------------------
+
+
+def current_defaults(settings: Settings) -> Defaults:
+    """Return the active defaults as the API-shape :class:`Defaults` model."""
+    _ensure_loaded(settings)
+    return Defaults(
+        model_profile_id=_DEFAULTS.model_profile_id,
+        judge_profile_id=_DEFAULTS.judge_profile_id,
+    )
+
+
+def set_defaults(settings: Settings, defaults: Defaults) -> Defaults:
+    """Validate references against the configured profiles + persist.
+
+    Raises :class:`HTTPException` 422 with a plain-language detail when
+    either ``model_profile_id`` or ``judge_profile_id`` points at a
+    profile id that doesn't exist. Honours ``None`` on either field as
+    the documented "no default chosen" sentinel.
+    """
+    _ensure_loaded(settings)
+    known_ids = {p.id for p in _PROFILES}
+
+    if defaults.model_profile_id is not None and defaults.model_profile_id not in known_ids:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"No profile with id {defaults.model_profile_id!r}. "
+                "Open Settings and pick a default model from the list."
+            ),
+        )
+    if defaults.judge_profile_id is not None and defaults.judge_profile_id not in known_ids:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"No profile with id {defaults.judge_profile_id!r}. "
+                "Open Settings and pick a judge model from the list, "
+                "or leave it blank to reuse the default model."
+            ),
+        )
+
+    global _DEFAULTS
+    _DEFAULTS = DefaultsConfig(  # pyright: ignore[reportConstantRedefinition]
+        model_profile_id=defaults.model_profile_id,
+        judge_profile_id=defaults.judge_profile_id,
+    )
+    _persist(settings)
+    return current_defaults(settings)
 
 
 def _set_profile_key(profile_id: str, api_key: str, *, use_fallback: bool) -> None:
