@@ -1,6 +1,6 @@
 # Multi-provider profile redesign — design
 
-Status: **approved.** All four open questions resolved (see Decision log at the bottom); this doc is the reference the `wt/profile-*` worktrees build against.
+Status: **Partial.** Backend half landed: `wt/profile-model` shipped in PR #38 (Profile/Defaults contract + keyring API + config schema + CRUD routes); `wt/profile-client` shipped in PR #40 (protocol-dispatching LLM client factory + real probe + pricing). Frontend half still pending: `wt/profile-ui` is next (Settings page rebuild + preset editor + i18n), then `wt/profile-cleanup` removes the legacy provider enum + routes and bumps the contract to v3. All four open questions resolved (see Decision log at the bottom); this doc is the reference the remaining `wt/profile-*` worktrees build against.
 
 The current Settings page hardcodes Anthropic + OpenAI. Almost every other LLM endpoint a working developer cares about — DeepSeek, Moonshot/Kimi, MiMo, Groq, Together, Qwen DashScope, SiliconFlow, local vLLM / Ollama / LMStudio — speaks the OpenAI chat-completions protocol. Forcing each one through a hardcoded "provider" enum throws that whole ecosystem away.
 
