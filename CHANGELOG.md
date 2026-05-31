@@ -42,6 +42,7 @@ Seven PRs land between 0.1.0a3 and the eventual 0.1.0a4 cut. The version stays u
 
 **Documentation-currency mechanical enforcement**
 - PR #39 (`wt/doc-currency`) — adds `tests/unit/test_doc_currency.py` with two test-gate guards: `test_changelog_unreleased_references_every_recent_pr` scans every squash-merge commit since the last released `v…` tag and fails if any `#NNN` is missing from `CHANGELOG.md`'s `[Unreleased]` section (with `[no-changelog]` opt-out for trivial PRs); `test_every_design_doc_carries_an_explicit_status_line` requires each `docs/*-design.md` to declare its status as Draft / Approved / Implemented / Partial / Superseded in the first 30 lines. Expands the existing `PULL_REQUEST_TEMPLATE.md` checklist to mark both items 🤖 enforced, and adds a "Documentation currency — non-negotiable" section to `CLAUDE.md`. Backstops the seven-PR drift this changelog already documented.
+- PR #41 (`chore/worktrees-honesty-post-pr40`) — post-merge housekeeping after PR #40: flips `wt/profile-client` in `WORKTREES.md` from ⏳ next to ✅ merged (commit `a8ba11e`, with a one-line summary of what shipped), elevates `wt/profile-ui` to ⏳ next, and bumps `docs/profiles-design.md` Status from `Approved` to `Partial` (2/4 worktrees landed). Doc-only diff — no code or test changes.
 
 ### Quality
 
