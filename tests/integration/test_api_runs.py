@@ -50,7 +50,6 @@ from aitap.scanner.models import (
     TemplateKind,
 )
 from aitap.server.app import create_app
-from aitap.server.routes import settings as settings_routes
 from aitap.server.routes._deps import get_db, get_settings
 from aitap.store import db as store_db
 
@@ -75,15 +74,19 @@ def app_with_settings(settings: Settings):
 
 
 @pytest.fixture(autouse=True)
-def _reset_mutable_state() -> Iterator[None]:
-    """Clear the in-memory settings override layer between tests.
+def _reset_profiles_state() -> Iterator[None]:
+    """Drop the profiles router's in-memory cache between tests.
 
-    ``settings_routes._MUTABLE_STATE`` is module-level by design (single
-    process holding overrides) but bleeds across tests if we don't reset.
+    Contract v3 removed the legacy ``settings_routes._MUTABLE_STATE``
+    override layer. The profiles router holds the live ``_PROFILES`` +
+    ``_defaults`` cache now; resetting it gives every test the
+    documented "no profiles configured" starting state.
     """
-    settings_routes._MUTABLE_STATE.clear()
+    from aitap.server.routes import profiles as profiles_routes
+
+    profiles_routes.reset_state_for_tests()
     yield
-    settings_routes._MUTABLE_STATE.clear()
+    profiles_routes.reset_state_for_tests()
 
 
 @pytest.fixture(autouse=True)
@@ -735,110 +738,13 @@ async def test_get_settings_reflects_defaults(client: AsyncClient) -> None:
     assert body["providers_available"] == []
 
 
-async def test_put_settings_partial_update(client: AsyncClient) -> None:
-    resp = await client.put(
-        "/api/settings",
-        json={"model": "claude-opus-4-7", "cost_per_run_usd": 2.50},
-    )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["model"] == "claude-opus-4-7"
-    assert body["cost_per_run_usd"] == 2.50
-    # Untouched fields fall through to defaults.
-    assert body["provider"] == "anthropic"
-
-    # Subsequent GET sees the override.
-    persisted = await client.get("/api/settings")
-    assert persisted.json()["model"] == "claude-opus-4-7"
-
-
-async def test_put_settings_persists_provider_defaults_to_config_yaml(
-    client: AsyncClient,
-    settings: Settings,
-) -> None:
-    """PUT writes the provider triple back to ``.aitap/config.yaml`` so the
-    change survives the next ``aitap ui`` restart.
-
-    Cost limits are deliberately *not* persisted from the UI in this
-    iteration — they're API-only. We assert that too: the yaml file
-    keeps whatever cost values were already there.
-    """
-    import yaml
-
-    # Seed a starter config.yaml under the fixture's project root.
-    config_path = settings.project_root / settings.aitap_dir / "config.yaml"
-    config_path.write_text(
-        "provider:\n"
-        "  name: anthropic\n"
-        "  model: claude-sonnet-4-6\n"
-        "  judge_model: null\n"
-        "cost:\n"
-        "  per_run_usd: 1.0\n"
-        "  per_session_usd: 10.0\n",
-        encoding="utf-8",
-    )
-
-    resp = await client.put(
-        "/api/settings",
-        json={
-            "provider": "openai",
-            "model": "gpt-4o-mini",
-            "judge_model": "gpt-4o",
-        },
-    )
-    assert resp.status_code == 200
-
-    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    assert data["provider"]["name"] == "openai"
-    assert data["provider"]["model"] == "gpt-4o-mini"
-    assert data["provider"]["judge_model"] == "gpt-4o"
-    # Cost block is left intact — the UI doesn't manage cost yet.
-    assert data["cost"]["per_run_usd"] == 1.0
-    assert data["cost"]["per_session_usd"] == 10.0
-
-
-async def test_put_settings_empty_judge_model_persists_as_null(
-    client: AsyncClient,
-    settings: Settings,
-) -> None:
-    """An empty-string ``judge_model`` means "fall back to ``model``" —
-    we normalise to YAML ``null`` so a fresh process reads it as the
-    documented sentinel."""
-    import yaml
-
-    config_path = settings.project_root / settings.aitap_dir / "config.yaml"
-    config_path.write_text(
-        "provider:\n  name: anthropic\n  model: claude-sonnet-4-6\n",
-        encoding="utf-8",
-    )
-
-    resp = await client.put(
-        "/api/settings",
-        json={"judge_model": "   "},
-    )
-    assert resp.status_code == 200
-    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    assert data["provider"]["judge_model"] is None
-
-
-async def test_put_settings_with_no_config_yaml_falls_back_to_memory(
-    client: AsyncClient,
-    settings: Settings,
-) -> None:
-    """No ``.aitap/config.yaml`` (e.g. dev install that never ran
-    ``aitap init`` in this dir) → silently skip the file write; runtime
-    override still applies. The endpoint must NOT 500."""
-    config_path = settings.project_root / settings.aitap_dir / "config.yaml"
-    assert not config_path.exists()  # sanity
-
-    resp = await client.put(
-        "/api/settings",
-        json={"model": "claude-opus-4-7"},
-    )
-    assert resp.status_code == 200
-    assert resp.json()["model"] == "claude-opus-4-7"
-    # File still absent.
-    assert not config_path.exists()
+# The four ``test_put_settings_*`` cases that lived here used to exercise
+# ``PUT /api/settings`` — the legacy provider-keyed mutation endpoint
+# removed in contract v3 (wt/profile-cleanup). The multi-provider
+# redesign moves "pick a default" to ``PUT /api/settings/defaults`` (which
+# operates on profile ids and is covered by
+# ``tests/unit/test_routes_profiles.py``); free-form provider/model edits
+# are no longer a UI affordance, so there's nothing left to assert here.
 
 
 async def test_get_settings_lists_detected_providers(
