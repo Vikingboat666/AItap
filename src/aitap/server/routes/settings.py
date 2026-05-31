@@ -47,7 +47,7 @@ from aitap.server.routes import (
 )
 
 # Local import to avoid the circular profiles ↔ settings dance at module
-# load. The profiles router owns the canonical ``_DEFAULTS`` cache and
+# load. The profiles router owns the canonical ``_defaults`` cache and
 # exposes ``current_defaults`` / ``set_defaults`` helpers we delegate to.
 from aitap.server.routes import profiles as profiles_routes
 from aitap.server.routes._deps import get_db, get_settings
