@@ -51,14 +51,22 @@ _ALLOWED_FILES: frozenset[str] = frozenset(
 )
 
 # Files allowed to import :func:`aitap.secrets.get_key_for_profile`.
-# Deliberately empty in this worktree: wt/profile-client adds the
-# OpenAI-compat / Anthropic clients to this list when it lands. Keeping
-# the allow-list empty now means the test catches any premature wiring
-# of the new getter — the staged rollout depends on that discipline.
+# The multi-provider redesign deliberately keeps this list shorter than
+# the legacy provider-keyed equivalent: the LLM client classes
+# (OpenAICompatClient / AnthropicClient) take the key as a constructor
+# argument and do NOT call into ``aitap.secrets`` themselves. Only the
+# route layer touches the vault — see ``docs/profiles-design.md``
+# §"Backend architecture / LLM client construction".
 _ALLOWED_FILES_PROFILE: frozenset[str] = frozenset(
     {
         # Defining module is trivially allowed.
         "secrets.py",
+        # The /api/profiles/{id}/test handler resolves the key from the
+        # vault and hands it to ``deep.factory.get_client_for_profile``
+        # — this is the single place in the request path where the
+        # raw key leaves ``aitap.secrets`` for the multi-provider
+        # client family. Added in wt/profile-client (PR #40).
+        "server/routes/profiles.py",
     }
 )
 

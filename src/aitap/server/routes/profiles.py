@@ -18,12 +18,15 @@ Endpoint inventory:
   ``docs/profiles-design.md``). The response carries a plain-language
   ``detail`` line so the UI can render the "we cleared your default"
   toast.
-- ``POST /api/profiles/{profile_id}/test`` → connectivity probe. **In
-  this worktree, the probe is a static stub**: we report ``ok: true``
-  when the key is configured and ``ok: false`` (reason ``auth``) when
-  it isn't. The real LLM client construction lands in wt/profile-client.
-  Search this file for the ``STUB:`` marker to find the replacement
-  point.
+- ``POST /api/profiles/{profile_id}/test`` → connectivity probe. The
+  handler resolves the key from the vault, builds a per-profile
+  :class:`~aitap.deep.client.LLMClient` via
+  :func:`~aitap.deep.factory.get_client_for_profile`, and sends one
+  ``ping``-shaped chat call (Decision 3 in
+  ``docs/profiles-design.md``). Errors map to the four documented
+  reason slots (``auth`` / ``rate_limit`` / ``network`` / ``other``);
+  the response detail is always plain-language and never includes the
+  raw SDK exception string (B2 security regression from PR #35).
 
 All endpoints honour the same security contract as the legacy key
 routes (PR #35): the raw key never appears in any response body, log
@@ -50,6 +53,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from aitap import secrets as secrets_module
 from aitap.config import DefaultsConfig, ProfileConfig, Settings
 from aitap.config_io import load_profiles_from_yaml, save_profiles_to_yaml
+from aitap.deep.client import (
+    ChatMessage,
+    ProviderAuthError,
+    ProviderError,
+    ProviderRateLimitError,
+)
+from aitap.deep.factory import get_client_for_profile
 from aitap.server.routes import (
     Defaults,
     Profile,
@@ -430,44 +440,125 @@ def delete_profile(
 
 
 @router.post("/profiles/{profile_id}/test", response_model=ProfileTestResponse)
-def test_profile(
+async def test_profile(
     profile_id: str,
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> ProfileTestResponse:
     """Connectivity probe for a profile's key.
 
-    STUB: this worktree does **not** issue a real LLM call. The full
-    implementation (build a client via ``aitap.deep.client``, send the
-    documented ``{messages:[{role:"user",content:"ping"}], max_tokens:4}``
-    payload, map ``ProviderAuthError`` / ``ProviderRateLimitError`` /
-    ``ProviderError`` onto the reason slots) lands in wt/profile-client.
-    For now we report:
+    Resolves the key from the vault, builds a per-profile
+    :class:`~aitap.deep.client.LLMClient` via
+    :func:`~aitap.deep.factory.get_client_for_profile`, and issues a
+    single minimal chat call: ``messages=[{role:"user", content:"ping"}]``
+    with ``max_tokens=4`` (Decision 3 in ``docs/profiles-design.md`` —
+    same shape for both protocols).
 
-    - ``ok: true`` when a key is configured, with a "connectivity check
-      will run once wt/profile-client lands" note so the user knows it
-      isn't a real probe yet.
-    - ``ok: false`` with ``reason="auth"`` when no key is configured;
-      ``detail`` tells the user to add one in Settings.
+    Exception → reason mapping:
+
+    - :class:`ProviderAuthError`     → ``"auth"`` — the key is wrong / revoked.
+    - :class:`ProviderRateLimitError` → ``"rate_limit"`` — key works, just busy.
+    - :class:`ProviderError`         → ``"network"`` — couldn't reach the host.
+    - Anything else                  → ``"other"`` — log + opaque detail.
+
+    None of the response detail strings ever include the raw exception
+    message: SDK exceptions have historically embedded request payloads
+    (Authorization header, body) in their ``str()`` (B2 regression from
+    PR #35). The detail copy is static + plain-language; the maintainer
+    sees the real exception in the log with ``exc_info=True``.
 
     The 404-on-missing-profile-id path is shared with the rest of the
     CRUD surface via :func:`_find_profile_or_404`.
     """
     _ensure_loaded(settings)
-    _find_profile_or_404(profile_id)  # raises 404 if unknown
-    status = secrets_module.key_status_for_profile(profile_id)
-    if not status.configured:
+    profile_config = _find_profile_or_404(profile_id)
+
+    # Resolve the key first — short-circuit before any factory work so
+    # an unconfigured profile never reaches the SDK. ``get_key_for_profile``
+    # is on the AST allow-list for this file (see
+    # ``test_secrets_import_discipline.py``).
+    api_key = secrets_module.get_key_for_profile(profile_id)
+    if not api_key:
         return ProfileTestResponse(
             ok=False,
             reason="auth",
-            detail=("No key is set for this profile. Add one in Settings before testing."),
+            detail="No key is set for this profile. Add one in Settings.",
         )
+
+    # Render once so both the success and failure messages can name the
+    # profile in a stable, user-friendly way. ``profile.label`` is the
+    # user's free-text display name; we prefer it over ``id`` / a raw
+    # provider name so a user with two "DeepSeek" rows can tell which
+    # one rejected the key.
+    profile = _render_profile(profile_config)
+    label = profile.label
+
+    try:
+        client = get_client_for_profile(profile, api_key)
+        # Minimal probe — same shape on both protocols per Decision 3.
+        # max_tokens=4 keeps Anthropic happy (required field) and bills
+        # essentially nothing on OpenAI-compatible endpoints.
+        await client.chat(
+            [ChatMessage(role="user", content="ping")],
+            max_tokens=4,
+        )
+    except ProviderAuthError:
+        # Plain-language: name the host + tell the user the next action
+        # (open Settings). Three reasons it might have rejected (wrong /
+        # revoked / wrong org) so the user has a checklist.
+        return ProfileTestResponse(
+            ok=False,
+            reason="auth",
+            detail=(
+                f"{label} rejected the key. Check it in Settings — it may be "
+                "wrong, revoked, or for a different organisation."
+            ),
+        )
+    except ProviderRateLimitError:
+        # Plain-language: the key works, the service is busy. "Wait and
+        # try again" is the actionable next step.
+        return ProfileTestResponse(
+            ok=False,
+            reason="rate_limit",
+            detail=(
+                f"{label} accepted the key but is rate-limiting you. Wait a moment and try again."
+            ),
+        )
+    except ProviderError:
+        # ProviderError without a more specific subclass means the SDK
+        # couldn't talk to the host (DNS, TLS, timeout, connection refused
+        # for a local Ollama, …). "Check your network" is the right next
+        # action for the working developer audience.
+        return ProfileTestResponse(
+            ok=False,
+            reason="network",
+            detail=(f"Aitap couldn't reach {label}. Check your network and try again."),
+        )
+    except Exception:
+        # Anything outside our taxonomy — including SDK-construction
+        # failures and unexpected runtime errors — gets logged with
+        # exc_info=True for the maintainer, but the user-facing detail
+        # stays static. The B2 regression test in
+        # ``test_routes_settings_keys.py`` confirms SDK exception strings
+        # (which historically embedded auth headers) never reach the
+        # response body.
+        _LOGGER.warning(
+            "profile test probe for %r raised an unexpected exception",
+            profile_id,
+            exc_info=True,
+        )
+        return ProfileTestResponse(
+            ok=False,
+            reason="other",
+            detail=(
+                f"{label} returned an unexpected response. Try again; if it keeps "
+                "happening, capture the timestamp and contact your admin."
+            ),
+        )
+
     return ProfileTestResponse(
         ok=True,
         reason=None,
-        detail=(
-            "Key is configured. A real connectivity check will run once "
-            "the multi-provider client lands."
-        ),
+        detail=f"{label} is reachable. The key works.",
     )
 
 
