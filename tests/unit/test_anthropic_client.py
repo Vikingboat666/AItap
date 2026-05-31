@@ -83,8 +83,12 @@ def _install_fake_sdk(
     """Build a fake `anthropic` module exposing the bits AnthropicClient needs."""
     fake_client = _FakeAnthropicClient(response)
 
-    def _AsyncAnthropic(api_key: str) -> _FakeAnthropicClient:
+    def _AsyncAnthropic(api_key: str, base_url: str | None = None) -> _FakeAnthropicClient:
+        # ``base_url`` was added in wt/profile-client (multi-provider
+        # redesign). Existing tests don't assert on it; we accept the
+        # kwarg with a default so they keep working unchanged.
         fake_client._used_api_key = api_key  # type: ignore[attr-defined]
+        fake_client._used_base_url = base_url  # type: ignore[attr-defined]
         return fake_client
 
     fake_module = types.SimpleNamespace(

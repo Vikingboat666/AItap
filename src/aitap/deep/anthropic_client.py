@@ -32,8 +32,31 @@ if TYPE_CHECKING:
     pass
 
 
+_ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
+
+
 class AnthropicClient(LLMClient):
-    """Anthropic Messages API client. Async via the SDK's ``AsyncAnthropic``."""
+    """Anthropic Messages API client. Async via the SDK's ``AsyncAnthropic``.
+
+    The multi-provider redesign (wt/profile-client) adds an explicit
+    ``base_url`` constructor arg so the factory in
+    :func:`aitap.deep.client.get_client_for_profile` can point this
+    client at a user-configured endpoint (a self-hosted Anthropic
+    gateway, a future regional endpoint, etc.). The default value
+    (``https://api.anthropic.com``) preserves byte-for-byte behaviour
+    for every legacy call site that constructed this class with just
+    ``(model, api_key)``.
+    """
+
+    def __init__(
+        self,
+        model: str,
+        api_key: str | None = None,
+        *,
+        base_url: str = _ANTHROPIC_DEFAULT_BASE_URL,
+    ) -> None:
+        super().__init__(model, api_key)
+        self.base_url = base_url
 
     @property
     def provider_name(self) -> str:
@@ -49,7 +72,12 @@ class AnthropicClient(LLMClient):
         response_format: Literal["text", "json"] | None = None,
     ) -> ChatResponse:
         AsyncAnthropic, sdk_errors = _import_sdk()
-        client = AsyncAnthropic(api_key=self._resolve_api_key())
+        # base_url goes through alongside the api_key — Anthropic SDK
+        # accepts both as keyword args. Passing the documented default
+        # explicitly (rather than relying on the SDK's implicit
+        # constant) makes the configured endpoint visible in error
+        # messages + debugger frames.
+        client = AsyncAnthropic(api_key=self._resolve_api_key(), base_url=self.base_url)
 
         system, anth_messages = _split_system(messages)
 
