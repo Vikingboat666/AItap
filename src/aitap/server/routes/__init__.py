@@ -48,6 +48,10 @@ Endpoint inventory (full implementation lives in sibling route modules):
     PUT    /api/profiles/{profile_id}    ProfileUpsertRequest -> Profile
     DELETE /api/profiles/{profile_id}    -> Profile
     POST   /api/profiles/{profile_id}/test -> ProfileTestResponse
+
+    GET    /api/profile-presets          -> list[ProfilePreset]
+    PUT    /api/profile-presets          ProfilePresetsUpdate -> list[ProfilePreset]
+    DELETE /api/profile-presets          -> list[ProfilePreset]  (reset to seeded defaults)
 """
 
 from __future__ import annotations
@@ -430,6 +434,47 @@ class ProfileTestResponse(_ApiModel):
     ok: bool
     reason: Literal["auth", "rate_limit", "network", "other"] | None = None
     detail: str | None = None
+
+
+# ---------- Profile presets (chip templates on the Add Profile form) ----------
+#
+# Additive (CONTRACTS.md): a new ``ProfilePreset`` type + a tiny request
+# wrapper used by the editor's "save the whole list" path. Decoupled
+# from :class:`Profile` because presets are template *suggestions* (no
+# key, no id of their own, no key-status triple) — they only carry the
+# subset of fields the chip click pre-fills on the Add Profile form.
+#
+# Storage: ``.aitap/profile-presets.json`` (user-editable). See
+# ``aitap.profile_presets`` for the seed-on-launch + load/save helpers.
+
+
+class ProfilePreset(_ApiModel):
+    """One template chip row on the Add Profile form.
+
+    Clicking the chip pre-fills the form's ``base_url`` + ``protocol`` +
+    ``model_id`` from this preset; the user still types a free-text
+    ``label`` and pastes their key. ``name`` is the chip's display
+    label (e.g. ``"DeepSeek"``); it is plain text, not a slug, because
+    presets don't have stable ids — the user can rename or delete them
+    freely via the Manage presets editor.
+    """
+
+    name: str = Field(min_length=1)
+    base_url: str = Field(min_length=1)
+    protocol: Literal["openai-compat", "anthropic"]
+    model_id: str = Field(min_length=1)
+
+
+class ProfilePresetsUpdate(_ApiModel):
+    """Body for ``PUT /api/profile-presets``.
+
+    Carries the whole new list — replace-in-full semantics. Per-row
+    add/edit/delete operations happen client-side in the editor;
+    persistence is a single round-trip on Save. Keeps the storage layer
+    a flat JSON file the user can also edit by hand.
+    """
+
+    presets: list[ProfilePreset]
 
 
 # ---------- Scan trigger (also used by audit) ----------
