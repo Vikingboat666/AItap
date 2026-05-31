@@ -1,6 +1,6 @@
 # Settings UI + secure API-key handling — design
 
-Status: **approved.** Scope, security model, and contract changes are signed off; this doc is the reference `wt/settings-ui` builds against.
+Status: **Implemented in PR #35** (2026-05-30). **Superseded by `docs/profiles-design.md`** for new development: the multi-provider redesign (in progress, see profiles-design.md Decision log) replaces the hardcoded `Provider = Literal["anthropic", "openai"]` enum + the `POST /api/settings/key*` route family with user-defined profiles. The security model from this doc (OS keyring + opt-in fallback + never-echo-key + log filter + import discipline) **carries over verbatim** — `wt/profile-model` reuses every guarantee. Keep this doc as the historical record for that security model; **do not** treat it as the active spec for new key-management work.
 
 aitap today reads provider API keys from environment variables only. If a key is missing, the UI silently continues; if the user wants to set or change one, the only path is editing shell env / `.env`. That ships as a real product gap (no view, no input, no warning). This feature closes it without weakening the security posture.
 

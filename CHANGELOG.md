@@ -6,6 +6,47 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+Seven PRs land between 0.1.0a3 and the eventual 0.1.0a4 cut. The version stays unreleased until the multi-provider redesign (PR #38 + the three follow-up worktrees `wt/profile-client`, `wt/profile-ui`, `wt/profile-cleanup`) is complete — that effort changes the contract in a breaking way and the release notes describe both halves together.
+
+### Added
+
+**Pipeline `segment` mode — full path** (Wave 5 Part A)
+- PR #32 (`wt/segment-dispatch`) — `RunCreate` gains additive `pipeline_mode: Literal["node","segment","end_to_end"] | None` + `pipeline_node_id: str | None`. `playground.dispatch` stops hardcoding `"end_to_end"` and honours the requested mode (fixes a latent node-mode no-op too). 422 on empty segment / conflicting selectors / missing node id.
+- PR #33 (`wt/segment-ui`) — `DagView` becomes a controlled selection component; Playground gains a node-pick panel + the `segment` mode entry; mode/target switches clear stale selectors; non-contiguous selections show a non-blocking warning.
+
+**Web UI internationalisation** (`react-i18next`)
+- PR #34 (`wt/i18n`) — every page and component, en + zh. Language switcher in the top nav, persisted via `localStorage`, follows browser language on first launch. `i18n.parity.test.ts` fails CI when en/zh key sets drift. New non-negotiable section in `CLAUDE.md` documents the bilingual rule.
+
+**Secure API-key management** (`docs/settings-ui-design.md`, now superseded by `docs/profiles-design.md`)
+- PR #35 (`wt/settings-ui`) — OS keyring is the primary store (Credential Manager / Keychain / Secret Service via `keyring>=25.7.0`); `~/.aitap/secrets.yaml` is an opt-in fallback gated by an explicit UI confirmation (409 → confirm dialog → retry with `use_fallback=true`). Single-owner `aitap.secrets` module with `get_key` / `key_status` / `set_key` / `delete_key` and AST-enforced import discipline. Global `logging.Filter` strips `sk-…` / `Bearer …` tokens before any handler emits. New API: `GET /api/settings.keys`, `POST/DELETE /api/settings/key`, `POST /api/settings/test/{provider}`. New Settings page; missing-key banner on Inventory + Playground; plain-language `--deep` CLI guard.
+
+**Plain-language UI copy rule**
+- Committed alongside PR #35 as a third non-negotiable `CLAUDE.md` section: every user-facing string (UI / CLI / errors / empty states) must read like everyday English/中文, name the next action, and never expose stack traces or raw status codes.
+
+**SPA fallback for React Router subpaths**
+- PR #36 (`wt/spa-fallback`) — refreshing on `/settings`, `/playground/...`, `/pipelines/<id>`, `/history/<id>` previously returned FastAPI's `{"detail":"Not Found"}`; a custom `_SpaStaticFiles` subclass now serves `index.html` for those paths while leaving `/api/*` 404s honest.
+
+**Settings page — provider / model / judge_model defaults**
+- PR #37 (`wt/settings-defaults`) — adds a Defaults card to the Settings page so the user can pick the default provider, default model, and judge model from the UI; the choice persists to `.aitap/config.yaml` (only the `provider:` block is touched, the `cost:` block stays untouched). Switching provider clears the model + judge inputs so a mismatched combination can't be saved (segment-ui target-switch pattern).
+
+**Multi-provider redesign — backend foundation** (`docs/profiles-design.md`)
+- PR #38 (`wt/profile-model`) — first of four serial worktrees. Adds the profile data model (`Profile` / `Defaults` / `ProfileUpsertRequest` / `ProfileTestResponse`), profile-id keyring API in `aitap.secrets` (parallel to the legacy provider-keyed surface), `ProfileConfig` / `DefaultsConfig` in `aitap.config`, YAML round-trip in `aitap.config_io` (preserves the legacy `provider:` block), and the CRUD routes (`GET/POST/PUT/DELETE/test` `/api/profiles`) plus `PUT /api/settings/defaults`. Decisions 1 + 2 (auto-null defaults on delete, slug algorithm) implemented and tested. **Stage-disciplined: no legacy code path is deleted yet** — `wt/profile-client` plugs the LLM-client factory into the new contract, `wt/profile-ui` rebuilds the Settings page around it, `wt/profile-cleanup` removes the legacy surface.
+
+### Changed
+
+- `aitap.__version__` reads from installed package metadata (`importlib.metadata.version`) so `aitap --version` tracks `pyproject.toml` as the single source of truth.
+- `routes/__init__.py` `SettingsResponse` gains `keys: list[ProviderKeyStatus]` (PR #35) and `defaults: Defaults` (PR #38). Both additive — old clients ignoring them still get a well-shaped response.
+
+### Quality
+
+- 622 backend tests (was 502 at 0.1.0a3) + 56 UI component tests (was 24).
+- Pyright strict + ruff clean across Python 3.10/3.11/3.12.
+- Every PR went through the established four-gate bar (pyright / ruff / pytest / pnpm typecheck-lint-test-build) and an Opus 4.7 review-to-ACCEPT loop.
+
+### Coming in 0.1.0a4
+
+The remaining three multi-provider worktrees (`wt/profile-client`, `wt/profile-ui`, `wt/profile-cleanup`) will land before the version is cut. The cleanup worktree carries the **BREAKING:** notes — `Provider` enum, `ProviderKeyStatus`, `SetKeyRequest`, `TestKeyResponse`, and the `/api/settings/key*` route family are removed and replaced by `/api/profiles*`. Contract version bumps to 3.
+
 ## [0.1.0a3] — 2026-05-23
 
 Wave 4 — M4 self-iteration loop lands. `aitap` can now run a real critique-and-revise loop: an LLM-as-judge scores each round on multiple dimensions, a critic rewrites the prompt (auto / guided / manual), and the loop converges against a baseline-relative target. Driven entirely from the Web Playground's Auto-iterate panel against the `/api/iterate` session endpoints.

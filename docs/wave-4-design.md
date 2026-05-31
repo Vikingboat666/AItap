@@ -1,6 +1,6 @@
 # Wave 4 — Self-iteration loop (M4) — Design
 
-**Status**: Spec finalised 2026-05-17. Worktree planning pending.
+**Status**: **Fully implemented and shipped in 0.1.0a3** (2026-05-23). All five decisions, all 7 worktrees (#24–#30 prereq + judge + critic + impact + loop + iterations-store + api-iterate + ui-iterate via #31) merged. This doc is preserved as the historical design record; it is not a TODO list.
 **Source**: 5 design decisions agreed during the 0.1.0a2 / 0.1.0a3 transition.
 **Predecessor**: Wave 3 shipped `iterate/__init__.py:iterate_one_round` as a single-round stub. Wave 4 replaces it with the full critique-and-revise loop.
 

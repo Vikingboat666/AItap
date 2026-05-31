@@ -1,6 +1,9 @@
 # Wave 5 — M5 — Design
 
-Status: **approved.** Both contract-shaping decisions (A·D1, B·D1) are signed off; remaining defaults carry their rationale inline.
+Status: **Partial.** Both contract-shaping decisions (A·D1, B·D1) are signed off.
+
+- **Part A — pipeline segment mode UI:** ✅ **implemented and merged** in PR #32 (segment-dispatch backend) + PR #33 (segment-ui frontend), 2026-05-24.
+- **Part B — image-prompt grid view:** ⏳ **not yet implemented.** Three worktrees still on the backlog: `wt/image-client` → `wt/image-dispatch` → `wt/image-ui`. Multi-provider redesign (`docs/profiles-design.md`) is being completed first; image grid resumes after that.
 
 M5 ships two unrelated features. They are sequenced by priority, not coupling:
 
