@@ -32,10 +32,10 @@ Two tiers:
   the AST can't parse. Matches known SDK call signatures (OpenAI,
   Anthropic, …) and extracts prompt strings, models, parameters, and
   message roles.
-- **L2 — LLM-assisted** (opt-in). Lives in `src/aitap/deep/`. Uses your
-  own provider key to recognize custom wrappers, resolve cross-file
-  prompt assembly, and infer purpose. Always shows a cost estimate
-  before running.
+- **L2 — LLM-assisted** (opt-in). Lives in `src/aitap/deep/`. Uses one
+  of your configured profile keys to recognize custom wrappers, resolve
+  cross-file prompt assembly, and infer purpose. Always shows a cost
+  estimate before running.
 
 Pipeline detection is rule-based in v0.1: variable data-flow within a
 file, the LangChain `|` operator, LlamaIndex query engines, and
@@ -47,7 +47,7 @@ intra-file function chaining.
 
 | Artifact | Location | Tracked in git? |
 |---|---|---|
-| Provider config + cost caps | `.aitap/config.yaml` | ✅ |
+| Profile list + defaults + cost caps | `.aitap/config.yaml` | ✅ |
 | Run history, scores, feedback | `.aitap/db.sqlite` | ❌ (gitignored) |
 | Extracted prompts | `.aitap/prompts/*.prompt.yaml` | ✅ |
 | Extracted pipelines | `.aitap/pipelines/*.pipeline.yaml` | ✅ |
@@ -121,5 +121,7 @@ protocol](https://github.com/aitap/aitap/blob/main/CONTRACTS.md).
    results stay local.
 5. **Reproducible** — every run pins the consumer commit SHA, provider,
    model, and parameters.
-6. **Provider-agnostic** — auto-detect from existing `.env` / config;
-   support multiple providers in one project.
+6. **Provider-agnostic** — user-defined profiles (label + base_url + key
+   + model + protocol) cover Anthropic, OpenAI, and every OpenAI-
+   compatible third-party endpoint (DeepSeek, Moonshot, Groq, Together,
+   Qwen, SiliconFlow, Ollama, LM Studio, …) in one project.

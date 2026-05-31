@@ -58,8 +58,8 @@ confirmation before making any LLM calls.
 
 ## Try it on the bundled example
 
-The `examples/starter/` project ships with a tiny OpenAI + Anthropic app
-you can scan to see the report shape:
+The `examples/starter/` project ships with a tiny app that calls a
+couple of LLM endpoints — scan it to see the report shape:
 
 ```bash
 git clone https://github.com/aitap/aitap.git
@@ -80,7 +80,7 @@ ephemeral pieces to `.gitignore`. The layout is:
 
 ```
 .aitap/
-├── config.yaml     # provider choices + cost caps
+├── config.yaml     # profile list + defaults + cost caps
 ├── db.sqlite       # gitignored — your local run history
 ├── prompts/        # git-tracked — extracted prompts
 ├── pipelines/      # git-tracked — extracted DAGs
