@@ -13,9 +13,11 @@ Coverage:
   replaces the old one.
 - ``DELETE /api/profiles/{id}`` real-removes the keyring entry and the
   YAML row, and auto-nulls any ``defaults`` reference (Decision 1).
-- ``POST /api/profiles/{id}/test`` is the stub that reports configured /
-  unconfigured without touching the network — the real probe lands in
-  ``wt/profile-client``.
+- ``POST /api/profiles/{id}/test`` resolves the key from the vault,
+  builds a real :class:`LLMClient` via
+  :func:`aitap.deep.factory.get_client_for_profile`, and exercises the
+  full reason taxonomy (auth / rate_limit / network / other) via a
+  scripted probe — added in ``wt/profile-client``.
 - 409 when the keyring is unreachable and ``use_fallback`` is False —
   same security contract as PR #35's ``POST /api/settings/key``.
 
@@ -28,13 +30,26 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Literal
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 from aitap import secrets as secrets_module
 from aitap.config import Settings
+from aitap.deep.client import (
+    ChatMessage,
+    ChatResponse,
+    CostEstimate,
+    LLMClient,
+    ProviderAuthError,
+    ProviderError,
+    ProviderRateLimitError,
+    TokenUsage,
+)
 from aitap.server.app import create_app
+from aitap.server.routes import Profile
 from aitap.server.routes import profiles as profiles_module
 from aitap.server.routes._deps import get_settings
 
@@ -345,16 +360,93 @@ def test_delete_unknown_profile_returns_404(
 
 
 # ---------------------------------------------------------------------------
-# POST /api/profiles/{id}/test (stub in this worktree)
+# POST /api/profiles/{id}/test — real probe (wt/profile-client CP4)
 # ---------------------------------------------------------------------------
 
 
-def test_test_profile_reports_unconfigured_when_no_key(
+class _ScriptedProbeClient(LLMClient):
+    """LLMClient that either echoes ``pong`` or raises a chosen error.
+
+    Mirrors the same-named class in ``test_routes_settings_keys.py``; we
+    swap the factory in :mod:`aitap.server.routes.profiles` so the
+    handler builds one of these instead of a real OpenAICompatClient /
+    AnthropicClient. Avoids any network call or SDK import in CI.
+    """
+
+    def __init__(
+        self,
+        model: str,
+        api_key: str | None = None,
+        *,
+        raises: type[Exception] | None = None,
+    ) -> None:
+        super().__init__(model, api_key)
+        self._raises = raises
+        # Record the constructor inputs so a test can assert the key
+        # was forwarded verbatim from secrets → factory → SDK.
+        self.received_api_key = api_key
+
+    @property
+    def provider_name(self) -> str:
+        return "scripted"
+
+    async def chat(
+        self,
+        messages: list[ChatMessage],
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        top_p: float | None = None,
+        response_format: Literal["text", "json"] | None = None,
+    ) -> ChatResponse:
+        if self._raises is not None:
+            raise self._raises("scripted failure")
+        return ChatResponse(
+            text="pong",
+            model=self.model,
+            usage=TokenUsage(input_tokens=1, output_tokens=1),
+            cost_usd=0.0,
+        )
+
+    def estimate_cost(
+        self,
+        messages: list[ChatMessage],
+        *,
+        max_tokens: int | None = None,
+    ) -> CostEstimate:
+        return CostEstimate(
+            input_tokens=1,
+            estimated_output_tokens=4,
+            usd=0.0,
+            model=self.model,
+        )
+
+
+def _patch_factory(raises: type[Exception] | None) -> patch[object]:
+    """Swap ``get_client_for_profile`` for one that returns our scripted client.
+
+    The handler in ``server/routes/profiles.py`` calls
+    ``factory.get_client_for_profile`` to build the probe client; this
+    helper makes that call return a controlled :class:`_ScriptedProbeClient`
+    so each branch (ok / auth / rate_limit / network / other) is
+    deterministic.
+    """
+    from aitap.server.routes import profiles as routes_profiles_module
+
+    def fake_factory(profile: Profile, api_key: str) -> LLMClient:
+        return _ScriptedProbeClient(profile.model_id, api_key, raises=raises)
+
+    return patch.object(routes_profiles_module, "get_client_for_profile", fake_factory)
+
+
+def test_test_profile_short_circuits_without_key_and_never_calls_provider(
     client: tuple[TestClient, _FakeKeyring, Settings],
 ) -> None:
-    """Stub behaviour per checkpoint 3 spec: no key → ok=false, plain-language
-    detail telling the user to add one. ``wt/profile-client`` replaces this
-    with a real probe call."""
+    """No key configured → ok=false, reason=auth, plain-language detail.
+
+    Crucially we do NOT patch the factory: the handler must short-circuit
+    before any factory call so a missing key never reaches the SDK.
+    """
     c, _, _ = client
     profile = c.post("/api/profiles", json=_body_for(label="DeepSeek")).json()
 
@@ -363,27 +455,147 @@ def test_test_profile_reports_unconfigured_when_no_key(
     body = res.json()
     assert body["ok"] is False
     assert body["reason"] == "auth"
-    assert body["detail"] is not None
-    # Plain-language: tells the user what to do.
-    assert "Settings" in body["detail"] or "set" in body["detail"].lower()
+    # Plain-language: names the next action.
+    assert "Settings" in body["detail"]
+    assert "key" in body["detail"].lower()
 
 
-def test_test_profile_reports_stub_ok_when_key_present(
+def test_test_profile_ok_when_probe_succeeds(
     client: tuple[TestClient, _FakeKeyring, Settings],
 ) -> None:
-    """Stub behaviour: configured key → ok=true, with a note that the real
-    probe runs after wt/profile-client lands."""
+    """Real probe path: key configured + scripted chat returns pong → ok=true."""
     c, _, _ = client
     profile = c.post("/api/profiles", json=_body_for(label="DeepSeek", api_key=_FAKE_KEY)).json()
 
-    res = c.post(f"/api/profiles/{profile['id']}/test")
-    assert res.status_code == 200
+    with _patch_factory(raises=None):
+        res = c.post(f"/api/profiles/{profile['id']}/test")
+    assert res.status_code == 200, res.text
     body = res.json()
     assert body["ok"] is True
     assert body["reason"] is None
-    assert body["detail"] is not None
+    assert body["detail"]
+    # Plain-language: names the endpoint and confirms reachability.
+    assert "reachable" in body["detail"].lower() or "works" in body["detail"].lower()
     # Never echoes the key.
     assert _FAKE_KEY not in res.text
+
+
+def test_test_profile_auth_when_probe_raises_provider_auth_error(
+    client: tuple[TestClient, _FakeKeyring, Settings],
+) -> None:
+    """ProviderAuthError → reason=auth + plain-language remediation."""
+    c, _, _ = client
+    profile = c.post("/api/profiles", json=_body_for(label="DeepSeek", api_key=_FAKE_KEY)).json()
+
+    with _patch_factory(raises=ProviderAuthError):
+        res = c.post(f"/api/profiles/{profile['id']}/test")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is False
+    assert body["reason"] == "auth"
+    # Plain-language: tells the user what to do next + names the screen.
+    assert "Settings" in body["detail"]
+    assert _FAKE_KEY not in res.text
+
+
+def test_test_profile_rate_limit_when_probe_raises_rate_limit(
+    client: tuple[TestClient, _FakeKeyring, Settings],
+) -> None:
+    """ProviderRateLimitError → reason=rate_limit + "wait a moment" detail."""
+    c, _, _ = client
+    profile = c.post("/api/profiles", json=_body_for(label="DeepSeek", api_key=_FAKE_KEY)).json()
+
+    with _patch_factory(raises=ProviderRateLimitError):
+        res = c.post(f"/api/profiles/{profile['id']}/test")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is False
+    assert body["reason"] == "rate_limit"
+    # Plain-language: tells the user the key works + asks them to wait.
+    assert "wait" in body["detail"].lower() or "try again" in body["detail"].lower()
+    assert _FAKE_KEY not in res.text
+
+
+def test_test_profile_network_when_probe_raises_provider_error(
+    client: tuple[TestClient, _FakeKeyring, Settings],
+) -> None:
+    """ProviderError (bare) → reason=network + reachability advice."""
+    c, _, _ = client
+    profile = c.post("/api/profiles", json=_body_for(label="DeepSeek", api_key=_FAKE_KEY)).json()
+
+    with _patch_factory(raises=ProviderError):
+        res = c.post(f"/api/profiles/{profile['id']}/test")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is False
+    assert body["reason"] == "network"
+    # Plain-language: names the next-action (check network).
+    assert "network" in body["detail"].lower() or "reach" in body["detail"].lower()
+    assert _FAKE_KEY not in res.text
+
+
+def test_test_profile_other_when_probe_raises_unexpected_exception(
+    client: tuple[TestClient, _FakeKeyring, Settings],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Anything not in the provider-error taxonomy → reason=other.
+
+    Crucially the *exception string* must not appear in the response —
+    SDK exceptions historically embedded auth headers in their str().
+    The detail field uses static copy + the exception lands in the log
+    with ``exc_info=True`` for the maintainer.
+    """
+    c, _, _ = client
+    profile = c.post("/api/profiles", json=_body_for(label="DeepSeek", api_key=_FAKE_KEY)).json()
+
+    leaky = "RuntimeError: Authorization: Bearer sk-LEAKY-CANARY-XXXXXXXXXX"
+
+    class _LeakyError(Exception):
+        pass
+
+    def fake_factory(p: Profile, api_key: str) -> LLMClient:
+        raise _LeakyError(leaky)
+
+    from aitap.server.routes import profiles as routes_profiles_module
+
+    with patch.object(routes_profiles_module, "get_client_for_profile", fake_factory):
+        res = c.post(f"/api/profiles/{profile['id']}/test")
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is False
+    assert body["reason"] == "other"
+    # The exception string must NOT appear in the response.
+    assert "LEAKY" not in res.text
+    assert "Bearer" not in res.text
+    assert "Authorization" not in res.text
+    # And neither does the configured key.
+    assert _FAKE_KEY not in res.text
+
+
+def test_test_profile_forwards_resolved_key_to_factory(
+    client: tuple[TestClient, _FakeKeyring, Settings],
+) -> None:
+    """The handler resolves the key from the vault and passes it to the
+    factory verbatim — this is the seam the rest of the multi-provider
+    redesign rests on, so we pin it directly."""
+    c, _, _ = client
+    profile = c.post("/api/profiles", json=_body_for(label="DeepSeek", api_key=_FAKE_KEY)).json()
+
+    captured: dict[str, object] = {}
+
+    def fake_factory(p: Profile, api_key: str) -> LLMClient:
+        captured["profile_id"] = p.id
+        captured["api_key"] = api_key
+        return _ScriptedProbeClient(p.model_id, api_key)
+
+    from aitap.server.routes import profiles as routes_profiles_module
+
+    with patch.object(routes_profiles_module, "get_client_for_profile", fake_factory):
+        res = c.post(f"/api/profiles/{profile['id']}/test")
+    assert res.status_code == 200, res.text
+    assert captured["profile_id"] == profile["id"]
+    assert captured["api_key"] == _FAKE_KEY
 
 
 def test_test_unknown_profile_returns_404(
