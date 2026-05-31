@@ -37,9 +37,12 @@ Seven PRs land between 0.1.0a3 and the eventual 0.1.0a4 cut. The version stays u
 - `aitap.__version__` reads from installed package metadata (`importlib.metadata.version`) so `aitap --version` tracks `pyproject.toml` as the single source of truth.
 - `routes/__init__.py` `SettingsResponse` gains `keys: list[ProviderKeyStatus]` (PR #35) and `defaults: Defaults` (PR #38). Both additive — old clients ignoring them still get a well-shaped response.
 
+**Documentation-currency mechanical enforcement**
+- PR #39 (`wt/doc-currency`) — adds `tests/unit/test_doc_currency.py` with two test-gate guards: `test_changelog_unreleased_references_every_recent_pr` scans every squash-merge commit since the last released `v…` tag and fails if any `#NNN` is missing from `CHANGELOG.md`'s `[Unreleased]` section (with `[no-changelog]` opt-out for trivial PRs); `test_every_design_doc_carries_an_explicit_status_line` requires each `docs/*-design.md` to declare its status as Draft / Approved / Implemented / Partial / Superseded in the first 30 lines. Expands the existing `PULL_REQUEST_TEMPLATE.md` checklist to mark both items 🤖 enforced, and adds a "Documentation currency — non-negotiable" section to `CLAUDE.md`. Backstops the seven-PR drift this changelog already documented.
+
 ### Quality
 
-- 622 backend tests (was 502 at 0.1.0a3) + 56 UI component tests (was 24).
+- 624 backend tests (was 502 at 0.1.0a3) + 56 UI component tests (was 24).
 - Pyright strict + ruff clean across Python 3.10/3.11/3.12.
 - Every PR went through the established four-gate bar (pyright / ruff / pytest / pnpm typecheck-lint-test-build) and an Opus 4.7 review-to-ACCEPT loop.
 

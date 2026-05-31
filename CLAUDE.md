@@ -39,6 +39,20 @@ Every user-facing string — UI text, CLI output, error messages, empty states, 
 - Applies to: `i18n/en.json` + `zh.json`, all `typer` CLI prints, `HTTPException(detail=...)` strings surfaced to the UI, exception messages that bubble up to the user, button labels, placeholders, tooltips, banners, toasts.
 - Code reviewers should call out copy that reads like an internal log line or a stack trace.
 
+## Documentation currency — non-negotiable
+
+Stale docs mislead the next session. We learned this the hard way (seven PRs piled up in `CHANGELOG.md` before anyone noticed, and three `docs/*-design.md` headers said "approved" months after the work shipped). To keep the working repo honest, two of these are mechanically enforced — see `tests/unit/test_doc_currency.py`:
+
+- 🤖 **Every merged PR must update `CHANGELOG.md`** under `[Unreleased]` before merge. The `test_changelog_unreleased_references_every_recent_pr` test scans every squash-merge commit since the last released `v…` tag and asserts each `#NNN` shows up in the `[Unreleased]` section. Truly trivial PRs (typo fix, comment-only cleanup) can opt out with `[no-changelog]` anywhere in the merge commit message.
+- 🤖 **Every `docs/*-design.md` carries an explicit `Status:` line** in the first 30 lines, using one of the canonical keywords: `Draft` / `Approved` / `Implemented` / `Partial` / `Superseded`. `test_every_design_doc_carries_an_explicit_status_line` enforces this. When a worktree mentioned in a design doc merges, its `Status:` line gets updated **in the same PR**.
+
+Two more conventions are reviewer-enforced (not mechanical, but the PR template asks):
+
+- **`WORKTREES.md` is the active worktree index, not a history book.** When the active multi-step roadmap moves (status moved from ⏳ to ✅, a worktree appears or disappears), update the table in the same PR that ships the change.
+- **A PR that adds a new non-negotiable rule to this file** (`CLAUDE.md`) must surface the rule in the PR description so future reviewers see it.
+
+The `.github/PULL_REQUEST_TEMPLATE.md` checklist mirrors these rules so a contributor sees them at PR time.
+
 ## Project structure / conventions
 
 See `CONTRACTS.md` for the cross-module contracts (frozen files), `CONTRIBUTING.md` for workflow, and `WORKTREES.md` for the parallel-worktree development pattern.
