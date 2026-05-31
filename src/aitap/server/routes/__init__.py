@@ -379,7 +379,10 @@ class Profile(_ApiModel):
     model_id: str
     notes: str = ""
     key_configured: bool
-    key_source: Literal["keyring", "fallback", "env", "none"]
+    # Profile-id keys never come from environment variables (env vars
+    # like ANTHROPIC_API_KEY are tied to provider *names*, not profile
+    # ids), so the Literal is narrower than ProviderKeyStatus.source.
+    key_source: Literal["keyring", "fallback", "none"]
     key_masked: str | None = None
 
 

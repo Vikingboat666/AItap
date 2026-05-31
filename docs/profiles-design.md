@@ -96,6 +96,10 @@ class SettingsResponse(_ApiModel):
     # `keys` from PR #35 is removed: per-profile status now lives inline on Profile.
 ```
 
+### Single-worker assumption
+
+The route layer caches the active profile list + defaults in module-level state (``aitap.server.routes.profiles._PROFILES`` / ``_defaults``). That cache assumes ``aitap ui`` runs the FastAPI app under a single uvicorn worker — the default and only documented deployment mode. A multi-worker deployment would need a shared store (Redis, SQLite, …) because each worker would otherwise hold its own drifting copy. Multi-worker is out of scope.
+
 ### Storage
 
 | Bit | Lives in | Why |

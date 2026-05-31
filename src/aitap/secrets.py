@@ -58,6 +58,12 @@ import yaml
 
 Provider = Literal["anthropic", "openai"]
 KeySource = Literal["keyring", "fallback", "env", "none"]
+# Narrower variant for profile-id keys: env vars are tied to *provider*
+# names (ANTHROPIC_API_KEY, OPENAI_API_KEY), so a profile-id resolver
+# can only return keyring / fallback / none. Exposing the tighter union
+# lets the route layer surface ``Profile.key_source`` without the dead
+# "env" arm that callers would never see.
+ProfileKeySource = Literal["keyring", "fallback", "none"]
 
 # Canonical provider list — single source of truth for the rest of the
 # module. Adding a third provider means adding it here + the env var map
@@ -101,7 +107,7 @@ class ProfileKeyStatus:
 
     profile_id: str
     configured: bool
-    source: KeySource
+    source: ProfileKeySource
     masked: str | None
 
 

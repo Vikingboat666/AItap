@@ -220,13 +220,50 @@ def test_save_preserves_legacy_provider_block(tmp_path: Path) -> None:
     }
 
 
-def test_save_skips_silently_when_no_config_file(tmp_path: Path) -> None:
-    """No ``config.yaml`` means the user never ran ``aitap init`` in
-    this dir — the runtime override still applies for the process
-    lifetime, but we don't materialise a new file out of thin air."""
+def test_save_skips_silently_when_no_aitap_dir(tmp_path: Path) -> None:
+    """No ``.aitap/`` at all means the user never ran ``aitap init``
+    here — we refuse to materialise files outside their explicit intent.
+    The runtime override still applies for the rest of the process."""
     settings = _settings(tmp_path)
+    assert not (tmp_path / ".aitap").exists()  # sanity
     assert save_profiles_to_yaml(settings, [], DefaultsConfig()) is False
     assert not _config_path(settings).exists()
+
+
+def test_save_creates_config_yaml_on_first_write_when_aitap_dir_exists(
+    tmp_path: Path,
+) -> None:
+    """``aitap init`` created ``.aitap/`` but no ``config.yaml`` yet
+    (e.g. user deleted the default file, or upgraded from an older
+    layout). The first profile save must materialise the file so the
+    UI's "Saved." message isn't a lie. Without this fix, the user would
+    add a profile in the UI, see success, restart, and find nothing
+    persisted."""
+    settings = _settings(tmp_path)
+    (tmp_path / ".aitap").mkdir(parents=True)
+    assert not _config_path(settings).exists()  # sanity
+
+    profile = ProfileConfig(
+        id="deepseek",
+        label="DeepSeek",
+        base_url="https://api.deepseek.com/v1",
+        protocol="openai-compat",
+        model_id="deepseek-chat",
+    )
+    saved = save_profiles_to_yaml(
+        settings,
+        [profile],
+        DefaultsConfig(model_profile_id="deepseek"),
+    )
+    assert saved is True
+    assert _config_path(settings).exists()
+
+    # The fresh file only carries the two sections this module owns —
+    # no legacy ``provider:`` block manufactured from nothing.
+    data = yaml.safe_load(_config_path(settings).read_text(encoding="utf-8"))
+    assert set(data.keys()) == {"profiles", "defaults"}
+    assert data["profiles"][0]["id"] == "deepseek"
+    assert data["defaults"]["model_profile_id"] == "deepseek"
 
 
 def test_save_skips_on_corrupted_existing_file(tmp_path: Path) -> None:

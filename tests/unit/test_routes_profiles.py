@@ -87,7 +87,7 @@ def client(
     """FastAPI client + fake keyring + the tmp Settings.
 
     The profiles module caches its config in-process between requests
-    (``_PROFILES`` / ``_DEFAULTS`` / ``_INITIALISED``); reset before AND
+    (``_PROFILES`` / ``_defaults`` / ``_initialised``); reset before AND
     after each test so concurrent test orderings don't bleed.
     """
     # Point ``~`` at tmp_path so the fallback file path lives under it.
@@ -323,7 +323,7 @@ def test_delete_profile_referenced_by_defaults_auto_nulls_defaults(
     from aitap.config import DefaultsConfig
     from aitap.server.routes import profiles as pm
 
-    pm._DEFAULTS = DefaultsConfig(  # type: ignore[assignment]
+    pm._defaults = DefaultsConfig(  # type: ignore[assignment]
         model_profile_id=profile["id"],
         judge_profile_id=profile["id"],
     )
@@ -332,8 +332,8 @@ def test_delete_profile_referenced_by_defaults_auto_nulls_defaults(
     assert res.status_code == 200
 
     # Both defaults references must be cleared.
-    assert pm._DEFAULTS.model_profile_id is None
-    assert pm._DEFAULTS.judge_profile_id is None
+    assert pm._defaults.model_profile_id is None
+    assert pm._defaults.judge_profile_id is None
 
 
 def test_delete_unknown_profile_returns_404(

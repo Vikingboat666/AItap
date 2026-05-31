@@ -72,8 +72,8 @@ _LOGGER = logging.getLogger(__name__)
 # durable mirror — every mutator calls both so a server restart picks
 # up the same view the previous process had.
 _PROFILES: list[ProfileConfig] = []
-_DEFAULTS: DefaultsConfig = DefaultsConfig()
-_INITIALISED = False
+_defaults: DefaultsConfig = DefaultsConfig()
+_initialised = False
 
 
 def _ensure_loaded(settings: Settings) -> None:
@@ -84,22 +84,22 @@ def _ensure_loaded(settings: Settings) -> None:
     ``get_settings`` after the module is imported). First request wins;
     subsequent requests just see the cached view.
     """
-    global _INITIALISED
-    if _INITIALISED:
+    global _initialised
+    if _initialised:
         return
     loaded_profiles, loaded_defaults = load_profiles_from_yaml(settings)
     _PROFILES[:] = loaded_profiles
-    global _DEFAULTS
-    _DEFAULTS = loaded_defaults  # pyright: ignore[reportConstantRedefinition]
-    _INITIALISED = True  # pyright: ignore[reportConstantRedefinition]
+    global _defaults
+    _defaults = loaded_defaults
+    _initialised = True
 
 
 def reset_state_for_tests() -> None:
     """Drop the in-process cache. Called by route tests between cases."""
-    global _INITIALISED, _DEFAULTS
+    global _initialised, _defaults
     _PROFILES.clear()
-    _DEFAULTS = DefaultsConfig()  # pyright: ignore[reportConstantRedefinition]
-    _INITIALISED = False  # pyright: ignore[reportConstantRedefinition]
+    _defaults = DefaultsConfig()
+    _initialised = False
 
 
 # ---------------------------------------------------------------------------
@@ -162,11 +162,11 @@ def _render_profile(config: ProfileConfig) -> Profile:
     """Materialise a :class:`Profile` with its current key status.
 
     The status triple comes from :mod:`aitap.secrets` — the raw key
-    never leaves the vault. ``key_source == "env"`` is included in the
-    Literal for shape compatibility with :class:`ProviderKeyStatus`,
-    even though :func:`key_status_for_profile` never returns it (env
-    vars are tied to provider names, not profile ids). The frontend
-    can lean on the same union as the legacy response.
+    never leaves the vault. ``Profile.key_source`` is intentionally
+    narrower than :class:`ProviderKeyStatus.source`: profile-id keys
+    only ever come from the keyring or the opt-in fallback file (env
+    vars are tied to provider *names*, not profile ids), so ``"env"``
+    is not a legal value here.
     """
     status = secrets_module.key_status_for_profile(config.id)
     return Profile(
@@ -198,7 +198,7 @@ def _find_profile_or_404(profile_id: str) -> ProfileConfig:
 
 def _persist(settings: Settings) -> None:
     """Write the current in-memory view back to YAML, log on failure."""
-    saved = save_profiles_to_yaml(settings, _PROFILES, _DEFAULTS)
+    saved = save_profiles_to_yaml(settings, _PROFILES, _defaults)
     if not saved:
         # save_profiles_to_yaml already logged a WARNING; the route
         # still returns 200 because the in-process cache is the source
@@ -210,7 +210,7 @@ def _persist(settings: Settings) -> None:
 # Defaults — read / write across module boundaries
 #
 # These helpers are the only public surface the settings router uses to
-# read / mutate ``_DEFAULTS``. Keeping the mutation inside this module
+# read / mutate ``_defaults``. Keeping the mutation inside this module
 # means the in-process cache + the YAML mirror stay in lockstep
 # regardless of which router triggered the change.
 # ---------------------------------------------------------------------------
@@ -220,8 +220,8 @@ def current_defaults(settings: Settings) -> Defaults:
     """Return the active defaults as the API-shape :class:`Defaults` model."""
     _ensure_loaded(settings)
     return Defaults(
-        model_profile_id=_DEFAULTS.model_profile_id,
-        judge_profile_id=_DEFAULTS.judge_profile_id,
+        model_profile_id=_defaults.model_profile_id,
+        judge_profile_id=_defaults.judge_profile_id,
     )
 
 
@@ -254,8 +254,8 @@ def set_defaults(settings: Settings, defaults: Defaults) -> Defaults:
             ),
         )
 
-    global _DEFAULTS
-    _DEFAULTS = DefaultsConfig(  # pyright: ignore[reportConstantRedefinition]
+    global _defaults
+    _defaults = DefaultsConfig(
         model_profile_id=defaults.model_profile_id,
         judge_profile_id=defaults.judge_profile_id,
     )
@@ -406,13 +406,13 @@ def delete_profile(
 
     _PROFILES.remove(existing)
 
-    global _DEFAULTS
-    cleared_model = _DEFAULTS.model_profile_id == profile_id
-    cleared_judge = _DEFAULTS.judge_profile_id == profile_id
+    global _defaults
+    cleared_model = _defaults.model_profile_id == profile_id
+    cleared_judge = _defaults.judge_profile_id == profile_id
     if cleared_model or cleared_judge:
-        _DEFAULTS = DefaultsConfig(  # pyright: ignore[reportConstantRedefinition]
-            model_profile_id=(None if cleared_model else _DEFAULTS.model_profile_id),
-            judge_profile_id=(None if cleared_judge else _DEFAULTS.judge_profile_id),
+        _defaults = DefaultsConfig(
+            model_profile_id=(None if cleared_model else _defaults.model_profile_id),
+            judge_profile_id=(None if cleared_judge else _defaults.judge_profile_id),
         )
         _LOGGER.info(
             "Cleared defaults referencing deleted profile %r (model=%s, judge=%s)",

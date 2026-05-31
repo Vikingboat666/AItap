@@ -138,18 +138,38 @@ def save_profiles_to_yaml(
     """Persist ``profiles`` + ``defaults`` back to ``.aitap/config.yaml``.
 
     Returns ``True`` when the file was written, ``False`` when it was
-    skipped (missing file, I/O error, or corrupted-load fallback). The
-    legacy ``provider:`` block — and any other top-level keys we don't
-    own — are preserved by reading the existing data and only
-    overwriting the two sections this module manages.
+    skipped (I/O error or corrupted-load fallback). Behaviour by state:
+
+    - ``.aitap/config.yaml`` exists → read, overwrite only ``profiles``
+      and ``defaults`` keys, write back. The legacy ``provider:`` block
+      and any other top-level keys the user owns are preserved.
+    - ``.aitap/config.yaml`` missing but ``.aitap/`` exists → create
+      the file with just ``profiles`` + ``defaults``. Without this, a
+      first-time UI user who configures a profile would see "Saved" but
+      get no persistence (the prior behaviour was a silent skip).
+    - ``.aitap/`` itself missing → skip silently; the project wasn't
+      ``aitap init``-ed and creating files outside the user's intent
+      would surprise them. Runtime override stays valid for the
+      current process.
     """
     path = _config_path(settings)
     if not path.is_file():
-        _LOGGER.info(
-            "No %s — profile changes kept in memory only",
+        if not path.parent.is_dir():
+            _LOGGER.info(
+                "No %s and no .aitap/ — profile changes kept in memory only",
+                path,
+            )
+            return False
+        # First-time write into a freshly-init'd project: start with an
+        # empty dict so only the two sections this module manages exist.
+        # No legacy ``provider:`` to preserve here — there's no prior file.
+        return _write_yaml(
             path,
+            {
+                "profiles": [p.model_dump(mode="json") for p in profiles],
+                "defaults": defaults.model_dump(mode="json"),
+            },
         )
-        return False
 
     data = _load_yaml(path)
     if data is None:
