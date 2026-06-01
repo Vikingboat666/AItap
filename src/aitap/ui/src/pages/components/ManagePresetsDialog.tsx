@@ -24,7 +24,7 @@
  *   code or SDK string.
  * - Confirm-dialog wording explains the consequence in everyday terms.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import {
@@ -33,6 +33,24 @@ import {
   resetPresets,
 } from "../../api/profiles";
 import { clsx } from "../../lib/clsx";
+
+/**
+ * Local row shape — carries a stable client-side ``_draftId`` so React
+ * can key the rendered list without falling back to the array index.
+ * Index-keys re-mount inputs on add/remove and steal focus from the
+ * row the user is typing in (Reviewer N-UI-1).
+ *
+ * The ``_draftId`` is allocated with ``crypto.randomUUID()`` when we
+ * seed from the prop or when the user clicks "Add row" — it never
+ * leaves this component. ``handleSave`` strips it before PUT.
+ */
+interface DraftPreset extends ProfilePreset {
+  _draftId: string;
+}
+
+function withDraftId(preset: ProfilePreset): DraftPreset {
+  return { ...preset, _draftId: crypto.randomUUID() };
+}
 
 interface ManagePresetsDialogProps {
   /** Current preset list as the parent has it. We snapshot into local state. */
@@ -49,7 +67,9 @@ export function ManagePresetsDialog({
   onChanged,
 }: ManagePresetsDialogProps) {
   const { t } = useTranslation();
-  const [draft, setDraft] = useState<ProfilePreset[]>(presets);
+  const [draft, setDraft] = useState<DraftPreset[]>(() =>
+    presets.map(withDraftId),
+  );
   const [busy, setBusy] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
   const [feedback, setFeedback] = useState<{
@@ -61,8 +81,41 @@ export function ManagePresetsDialog({
   // a Reset round-trip — the parent calls ``onChanged`` with the new
   // server state and we want the editor to render it immediately.
   useEffect(() => {
-    setDraft(presets);
+    setDraft(presets.map(withDraftId));
   }, [presets]);
+
+  // Esc closes the main dialog (and the confirm sub-dialog if open).
+  // a11y baseline carried from PR #35 — initial focus + Escape; full
+  // focus-trap waits for a follow-up.
+  useEffect(() => {
+    function onKey(event: KeyboardEvent): void {
+      if (event.key === "Escape") {
+        if (confirmReset) {
+          setConfirmReset(false);
+        } else {
+          onClose();
+        }
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [confirmReset, onClose]);
+
+  // Initial focus — move the cursor into the first row's Name input
+  // when the dialog mounts so keyboard users land in a useful place.
+  const firstInputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    firstInputRef.current?.focus();
+  }, []);
+
+  // Initial focus for the reset confirm sub-dialog — Cancel by default
+  // (less destructive choice gets the focus, same as the delete confirm).
+  const resetCancelRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    if (confirmReset) {
+      resetCancelRef.current?.focus();
+    }
+  }, [confirmReset]);
 
   function updateRow(index: number, patch: Partial<ProfilePreset>): void {
     setDraft((rows) =>
@@ -78,6 +131,7 @@ export function ManagePresetsDialog({
     setDraft((rows) => [
       ...rows,
       {
+        _draftId: crypto.randomUUID(),
         name: "",
         base_url: "",
         protocol: "openai-compat",
@@ -90,7 +144,11 @@ export function ManagePresetsDialog({
     setBusy(true);
     setFeedback(null);
     try {
-      const saved = await replacePresets(draft);
+      // Strip the local-only ``_draftId`` before sending to the server.
+      const payload: ProfilePreset[] = draft.map(
+        ({ _draftId: _drop, ...rest }) => rest,
+      );
+      const saved = await replacePresets(payload);
       setFeedback({ tone: "ok", text: t("settings.presetsManageSaved") });
       onChanged(saved);
     } catch {
@@ -105,7 +163,7 @@ export function ManagePresetsDialog({
     setFeedback(null);
     try {
       const seeded = await resetPresets();
-      setDraft(seeded);
+      setDraft(seeded.map(withDraftId));
       onChanged(seeded);
       setConfirmReset(false);
       setFeedback({
@@ -158,7 +216,7 @@ export function ManagePresetsDialog({
 
           {draft.map((row, index) => (
             <div
-              key={index}
+              key={row._draftId}
               className="grid grid-cols-1 gap-2 rounded-md border border-ink-100 bg-white p-2 md:grid-cols-12"
             >
               <label className="md:col-span-3">
@@ -166,6 +224,7 @@ export function ManagePresetsDialog({
                   {t("settings.presetsManageNameField")}
                 </span>
                 <input
+                  ref={index === 0 ? firstInputRef : undefined}
                   type="text"
                   value={row.name}
                   onChange={(e) => updateRow(index, { name: e.target.value })}
@@ -309,6 +368,7 @@ export function ManagePresetsDialog({
             </div>
             <div className="flex justify-end gap-2">
               <button
+                ref={resetCancelRef}
                 type="button"
                 onClick={() => setConfirmReset(false)}
                 disabled={busy}
