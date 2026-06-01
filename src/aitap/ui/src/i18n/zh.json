@@ -320,8 +320,8 @@
     "barTitleBaseline": "第 {{round}} 轮 — {{score}}（基线）"
   },
   "settings": {
-    "title": "API 密钥",
-    "subtitle": "aitap 把各家 provider 的 API key 存在哪里，以及如何测试。",
+    "title": "设置",
+    "subtitle": "选默认 model、管理 profile、或添加一个新的。Key 存在系统钥匙串里。",
     "defaultsTitle": "默认 provider 与 model",
     "defaultsSubtitle": "用于深度扫描、跑 prompt、迭代时的评分模型。保存到 .aitap/config.yaml——重启也不丢。",
     "defaultsProviderLabel": "Provider",
@@ -454,7 +454,8 @@
     "defaultsCardSaving": "保存中…",
     "defaultsCardSaved": "默认设置已保存。",
     "defaultsCardFailure": "保存默认设置失败，请重试。",
-    "missingProfilesBanner": "还没配置任何 model profile。deep scan 和跑 prompt 至少需要一个——去「设置」里添加一个。",
+    "missingProfilesBanner": "还没配置 model profile，加一个才能做 scan / run / judge。",
+    "missingProfileKeysBanner": "已有 profile 都还没 key，去「设置」里加一个。",
     "missingDefaultBanner": "还没选默认 model。去「设置」里挑一个，跑任务时才知道走哪个 profile。"
   },
   "downstream": {

@@ -320,8 +320,8 @@
     "barTitleBaseline": "round {{round}} — {{score}} (baseline)"
   },
   "settings": {
-    "title": "API keys",
-    "subtitle": "Where aitap stores your provider API keys, and how to test them.",
+    "title": "Settings",
+    "subtitle": "Pick your default model, manage profiles, or add a new one. Keys are stored in your system keychain.",
     "defaultsTitle": "Default provider & model",
     "defaultsSubtitle": "Used for deep scan, prompt runs, and the iteration judge. Saved to .aitap/config.yaml — survives restarts.",
     "defaultsProviderLabel": "Provider",
@@ -454,7 +454,8 @@
     "defaultsCardSaving": "saving…",
     "defaultsCardSaved": "Defaults saved.",
     "defaultsCardFailure": "Couldn't save the defaults. Try again.",
-    "missingProfilesBanner": "No model profile is set up yet. Deep scan and prompt runs need at least one — add one in Settings.",
+    "missingProfilesBanner": "No model profiles yet. Add one in Settings to start scanning, running, or judging prompts.",
+    "missingProfileKeysBanner": "None of your profiles have an API key. Open Settings to add one.",
     "missingDefaultBanner": "No default model is picked yet. Open Settings and choose one so runs know which profile to use."
   },
   "downstream": {
