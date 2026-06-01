@@ -320,8 +320,38 @@ export const iterateSessionFailedFixture: IterateSessionResponse = {
   final_version: null,
 };
 
+/**
+ * Default profiles fixture — one OK profile so the MissingKeyBanner
+ * stays silent on every page that doesn't care about the banner.
+ * Tests that exercise the banner (or the Settings page itself) call
+ * ``server.use(...)`` with their own fixture.
+ */
+export const profilesFixture = [
+  {
+    id: "prof_default",
+    label: "Default OpenAI",
+    base_url: "https://api.openai.com/v1",
+    protocol: "openai-compat" as const,
+    model_id: "gpt-4o-mini",
+    notes: "",
+    key_configured: true,
+    key_source: "keyring" as const,
+    key_masked: "sk-...xxxx",
+  },
+];
+
+/** Default presets fixture — empty so the chip row renders the "no presets" hint. */
+export const presetsFixture: Array<{
+  name: string;
+  base_url: string;
+  protocol: "openai-compat" | "anthropic";
+  model_id: string;
+}> = [];
+
 export const handlers = [
   http.get("/api/settings", () => HttpResponse.json(settingsFixture)),
+  http.get("/api/profiles", () => HttpResponse.json(profilesFixture)),
+  http.get("/api/profile-presets", () => HttpResponse.json(presetsFixture)),
   http.get("/api/prompts", () => HttpResponse.json(promptListFixture)),
   http.get("/api/prompts/:promptId", ({ params }) => {
     if (params.promptId === "p_test_alpha") {
