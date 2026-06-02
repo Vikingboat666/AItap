@@ -15,6 +15,16 @@ prices defined.
 Models we don't have a price for raise :class:`UnknownModelError` from
 :func:`estimate_usd` rather than silently returning 0 — silent zero
 defeats the whole "always show cost before spending" guarantee.
+
+FX drift policy (PR #40 follow-up). Some non-USD providers (today:
+Moonshot/Kimi) publish prices only in CNY; the table converts at the
+rate documented on each row using a snapshot anchored to LAST_UPDATED.
+When the spot rate drifts more than ~3% from the anchor, re-anchor the
+row(s) and bump LAST_UPDATED. Tracking the drift here (in code) rather
+than in a service avoids a runtime FX dependency at the cost of a
+periodic maintenance bump. UI cost lines for CNY-sourced rows would
+ideally surface the anchor date alongside the figure — that's a future
+worktree's affordance.
 """
 
 from __future__ import annotations
@@ -107,25 +117,45 @@ _TOGETHER: dict[str, _Price] = {
 
 
 _PRICES: dict[tuple[str, str], _Price] = {}
-for model, price in _ANTHROPIC.items():
-    _PRICES[("anthropic", model)] = price
-for model, price in _OPENAI.items():
-    _PRICES[("openai", model)] = price
+
+
+def _register(provider: str, table: dict[str, _Price]) -> None:
+    """Register a vendor's pricing rows under ``provider``, raising on
+    a model_id collision so a future maintainer doesn't silently shadow
+    a row by adding a same-named entry to a different vendor map.
+
+    Today the OpenAI-compatible vendors share the ``"openai-compat"``
+    namespace because the LLMClient subclass uses a single provider key;
+    that means a collision between, say, a future DeepSeek ``"v1"`` row
+    and a Moonshot ``"v1"`` row would have silently kept whichever
+    imported last. PR #40 follow-up: assert the constraint instead of
+    relying on vendor-distinctive ``model_id``s. If two vendors really
+    do share a name, prefix the row (e.g. ``"deepseek/v1"``) rather than
+    fighting the assertion.
+    """
+    for model, price in table.items():
+        key = (provider, model)
+        existing = _PRICES.get(key)
+        if existing is not None:
+            raise AssertionError(
+                f"pricing collision: {provider!r}/{model!r} is already mapped "
+                f"to {existing!r}; prefix the model_id to disambiguate."
+            )
+        _PRICES[key] = price
+
+
+_register("anthropic", _ANTHROPIC)
+_register("openai", _OPENAI)
 # Every OpenAI-compatible vendor is reached through the single
 # "openai-compat" provider key in the LLMClient subclass; the lookup
-# table merges the four vendor maps into that one provider namespace.
-# A model name collision across vendors would silently win whichever
-# import order runs first — we don't have one today (the model_ids are
-# vendor-distinctive: deepseek-chat, moonshot-v1-*, llama-3.*) but a
-# future row should pick a vendor-prefixed name to stay safe.
-for model, price in _DEEPSEEK.items():
-    _PRICES[("openai-compat", model)] = price
-for model, price in _MOONSHOT.items():
-    _PRICES[("openai-compat", model)] = price
-for model, price in _GROQ.items():
-    _PRICES[("openai-compat", model)] = price
-for model, price in _TOGETHER.items():
-    _PRICES[("openai-compat", model)] = price
+# table merges the vendor maps into that one provider namespace.
+# ``_register`` raises on duplicate (provider, model) keys so a future
+# row that collides with an existing one fails at import time rather
+# than silently winning whichever runs last.
+_register("openai-compat", _DEEPSEEK)
+_register("openai-compat", _MOONSHOT)
+_register("openai-compat", _GROQ)
+_register("openai-compat", _TOGETHER)
 
 
 def known_models(provider: str | None = None) -> list[str]:

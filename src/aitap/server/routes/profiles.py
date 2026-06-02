@@ -424,6 +424,12 @@ def delete_profile(
             model_profile_id=(None if cleared_model else _defaults.model_profile_id),
             judge_profile_id=(None if cleared_judge else _defaults.judge_profile_id),
         )
+        # profile_id is a user-chosen slug (e.g. ``"deepseek-2"``), not
+        # a secret — it's the same string that appears in URLs the user
+        # navigates to. Log it directly so diagnostics stay actionable
+        # ("which profile lost its default?"). The keyring entry the
+        # delete just removed is keyed by this same id, so blanking it
+        # here would defeat the log line's purpose.
         _LOGGER.info(
             "Cleared defaults referencing deleted profile %r (model=%s, judge=%s)",
             profile_id,

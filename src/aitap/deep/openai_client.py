@@ -303,9 +303,15 @@ def _safe_compat_cost_from_tokens(model: str, input_tokens: int, output_tokens: 
     Unpriced models return 0 USD from this internal helper. The route
     layer renders ``cost: unknown`` in the UI for unknown models per the
     design doc; the public ``estimate_cost`` surface is the seam where
-    the legacy "0 means unknown" tradition still applies. Future work
-    can swap the internal helper for one that returns ``float | None``
-    and propagate ``None`` up the stack — outside this worktree's scope.
+    the legacy "0 means unknown" tradition still applies.
+
+    TODO(profile-runs-migration): swap this internal helper for one that
+    returns ``float | None`` and propagate ``None`` up through
+    ``ChatResponse.cost_usd`` so the UI's ``cost: unknown`` rendering
+    survives all the way down from the SDK call site. Doing this here
+    would cascade into ``LLMClient.chat`` (every implementation pins the
+    return type to ``float``), so this is part of the same contract
+    bump as the RunCreate -> profile_id migration.
     """
     try:
         return estimate_usd(
