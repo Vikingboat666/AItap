@@ -1,13 +1,16 @@
 """HTTP API contract.
 
-Contract version: 2 (2026-05-31) — additive: multi-provider profile types
-(``Profile``, ``Defaults``, ``ProfileUpsertRequest``,
-``ProfileTestResponse``). All legacy provider-keyed types
-(``Provider`` enum field, ``ProviderKeyStatus``, ``SetKeyRequest``,
-``TestKeyResponse``, ``SettingsUpdate``) and the legacy key routes
-are retained for now; wt/profile-cleanup removes them as a separate
-breaking step. See ``docs/profiles-design.md`` for the redesign and
-``CONTRACTS.md`` for the change protocol.
+Contract version: 3 (2026-05-31) — breaking change: provider enum → profiles list.
+The legacy provider-keyed request/response types (``ProviderKeyStatus``,
+``SetKeyRequest``, ``TestKeyResponse``, ``SettingsUpdate``) and the
+``SettingsResponse.keys`` field are removed in this version. The
+multi-provider ``Profile`` / ``Defaults`` / ``ProfileUpsertRequest`` /
+``ProfileTestResponse`` types added in v2 are now the only documented
+key-management surface. The associated legacy routes
+(``POST /api/settings/key``, ``DELETE /api/settings/key/{provider}``,
+``POST /api/settings/test/{provider}``, ``PUT /api/settings``) are
+removed alongside the types. See ``docs/profiles-design.md`` for the
+redesign rationale and ``CONTRACTS.md`` for the change protocol.
 
 Pydantic request/response models defining the surface of the FastAPI
 backend that the React frontend consumes. After any change here,
@@ -35,13 +38,8 @@ Endpoint inventory (full implementation lives in sibling route modules):
     POST   /api/history/{prompt_id}/rollback  RollbackRequest -> PromptVersionResponse
 
     GET    /api/settings                 -> SettingsResponse
-    PUT    /api/settings                 SettingsUpdate -> SettingsResponse
     PUT    /api/settings/defaults        Defaults -> SettingsResponse
     GET    /api/settings/cost-estimate   ?prompt_id=&model=  -> CostEstimateResponse
-
-    POST   /api/settings/key             SetKeyRequest -> ProviderKeyStatus
-    DELETE /api/settings/key/{provider}  -> ProviderKeyStatus
-    POST   /api/settings/test/{provider} -> TestKeyResponse
 
     GET    /api/profiles                 -> list[Profile]
     POST   /api/profiles                 ProfileUpsertRequest -> Profile
@@ -270,20 +268,6 @@ class CostEstimateResponse(_ApiModel):
     model: str
 
 
-class ProviderKeyStatus(_ApiModel):
-    """Per-provider API-key state for the Settings page.
-
-    Additive (CONTRACTS.md): new type, not a rename. The frontend reads
-    this off ``SettingsResponse.keys``; the raw key value never appears
-    on any response, only the masked preview.
-    """
-
-    provider: Literal["anthropic", "openai"]
-    configured: bool
-    source: Literal["keyring", "fallback", "env", "none"]
-    masked: str | None = None  # e.g. "sk-ant-...XXXX"; null when unconfigured
-
-
 class Defaults(_ApiModel):
     """Per-process default profile selections for runs and the judge.
 
@@ -298,72 +282,34 @@ class Defaults(_ApiModel):
 
 
 class SettingsResponse(_ApiModel):
+    """Snapshot of the current process's effective settings.
+
+    The legacy provider-keyed ``keys`` array (``list[ProviderKeyStatus]``)
+    is removed in contract v3. Per-profile key status now lives inline
+    on each :class:`Profile` returned by ``GET /api/profiles``; clients
+    that need to render key state read that endpoint instead. The
+    legacy provider/model/judge_model fields are retained for
+    backward-compat reading only — the UI no longer surfaces them
+    after the multi-provider redesign.
+    """
+
     provider: Provider
     model: str
     judge_model: str | None
     cost_per_run_usd: float
     cost_per_session_usd: float
     providers_available: list[ProviderEvidence]
-    # Additive: per-provider key status. Default empty so old clients
-    # that don't ask about it still get a well-shaped response.
-    keys: list[ProviderKeyStatus] = Field(default_factory=list)
-    # Additive: per-process default profile selections. Both fields are
-    # nullable; ``None`` is the documented "no default chosen" sentinel,
-    # surfaced as a yellow Inventory banner (Decision 1 in
-    # ``docs/profiles-design.md``). Default is an empty Defaults so old
-    # clients that don't ask about it still get a well-shaped response.
+    # Per-process default profile selections. Both fields are nullable;
+    # ``None`` is the documented "no default chosen" sentinel, surfaced
+    # as a yellow Inventory banner (Decision 1 in
+    # ``docs/profiles-design.md``).
     defaults: Defaults = Field(default_factory=lambda: Defaults())
-
-
-class SettingsUpdate(_ApiModel):
-    provider: Provider | None = None
-    model: str | None = None
-    judge_model: str | None = None
-    cost_per_run_usd: float | None = None
-    cost_per_session_usd: float | None = None
-
-
-class SetKeyRequest(_ApiModel):
-    """Body for ``POST /api/settings/key``.
-
-    The raw ``key`` is request-only — it is **never** echoed on the
-    response, never logged, and never persisted into the SQLite store.
-    The response is a :class:`ProviderKeyStatus` containing only
-    metadata.
-    """
-
-    provider: Literal["anthropic", "openai"]
-    key: str = Field(min_length=1)
-    # When False (the default), the route persists via the OS keyring and
-    # 409s the request if the keyring is unusable. The UI then shows a
-    # "your keychain isn't available — save to a file instead?" confirm
-    # dialog and re-POSTs with use_fallback=True. This keeps the silent
-    # fallback path the security model forbids out of the contract.
-    use_fallback: bool = False
-
-
-class TestKeyResponse(_ApiModel):
-    """Result of ``POST /api/settings/test/{provider}``.
-
-    ``ok=True`` means the minimal probe call (Anthropic ``/v1/messages``
-    or OpenAI ``chat.completions`` with a single ``"ping"`` and
-    ``max_tokens=4``) returned a 2xx. ``ok=False`` reports a coarse
-    reason so the UI can render the right plain-language remediation;
-    ``detail`` is a human sentence (never a stack trace, never the key).
-    """
-
-    ok: bool
-    reason: Literal["auth", "rate_limit", "network", "other"] | None = None
-    detail: str | None = None
 
 
 # ---------- Profiles (multi-provider redesign) ----------
 #
-# Additive (CONTRACTS.md): these types coexist with the legacy
-# ``Provider``/``ProviderKeyStatus``/``SetKeyRequest`` shapes above
-# during the staged migration. wt/profile-cleanup removes the legacy
-# ones once all callers (UI + dispatch) move over. See
-# ``docs/profiles-design.md`` for the rollout plan.
+# Contract v3: profile types are the only documented key-management
+# surface. See ``docs/profiles-design.md`` for the design.
 
 
 class Profile(_ApiModel):
@@ -385,7 +331,7 @@ class Profile(_ApiModel):
     key_configured: bool
     # Profile-id keys never come from environment variables (env vars
     # like ANTHROPIC_API_KEY are tied to provider *names*, not profile
-    # ids), so the Literal is narrower than ProviderKeyStatus.source.
+    # ids), so the Literal is narrower than the legacy key-source type.
     key_source: Literal["keyring", "fallback", "none"]
     key_masked: str | None = None
 
@@ -407,8 +353,11 @@ class ProfileUpsertRequest(_ApiModel):
     - On PUT: when present, the route updates the keyring entry under
       the (unchanged) id; absent means "leave the existing key alone".
 
-    ``use_fallback`` mirrors the PR #35 :class:`SetKeyRequest` semantics
-    — same 409 + UI confirmation flow when the OS keyring is down.
+    ``use_fallback`` is the explicit opt-in to write the key into
+    ``~/.aitap/secrets.yaml`` when the OS keyring is unusable. The route
+    returns 409 + a plain-language detail when the keyring is down and
+    this flag is false, so the UI can show a confirm dialog and re-POST
+    with ``use_fallback=True``.
     """
 
     label: str = Field(min_length=1)
@@ -423,12 +372,11 @@ class ProfileUpsertRequest(_ApiModel):
 class ProfileTestResponse(_ApiModel):
     """Result of ``POST /api/profiles/{profile_id}/test``.
 
-    Same shape as :class:`TestKeyResponse` — keyed by profile id rather
-    than provider name. The connectivity probe lives in
-    wt/profile-client; this worktree ships a static stub that reports
-    "key configured" / "no key" without making a network call. See
-    ``server/routes/profiles.py::test_profile`` for the comment that
-    flags the stub for replacement.
+    Connectivity probe outcome for one profile. ``ok=True`` means the
+    minimal "ping" chat call returned a 2xx; ``ok=False`` reports a
+    coarse reason so the UI can render the right plain-language
+    remediation. ``detail`` is a human sentence (never a stack trace,
+    never the key).
     """
 
     ok: bool
