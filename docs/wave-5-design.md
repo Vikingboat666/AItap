@@ -3,7 +3,7 @@
 Status: **Partial.** Both contract-shaping decisions (A·D1, B·D1) are signed off.
 
 - **Part A — pipeline segment mode UI:** ✅ **implemented and merged** in PR #32 (segment-dispatch backend) + PR #33 (segment-ui frontend), 2026-05-24.
-- **Part B — image-prompt grid view:** ⏳ **not yet implemented.** Three worktrees still on the backlog: `wt/image-client` → `wt/image-dispatch` → `wt/image-ui`. Multi-provider redesign (`docs/profiles-design.md`) is being completed first; image grid resumes after that.
+- **Part B — image-prompt grid view:** ⏳ **in progress.** Three serial worktrees: `wt/image-client` ✅ merged in PR #45 (provider layer + DALL-E client + image pricing + mock; 2026-06-03), `wt/image-dispatch` ⏳ next (run dispatch + storage + cost gate), `wt/image-ui` ⏳ pending (grid page).
 
 M5 ships two unrelated features. They are sequenced by priority, not coupling:
 
