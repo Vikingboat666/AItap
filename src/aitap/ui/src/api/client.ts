@@ -29,6 +29,8 @@ import { QueryClient } from "@tanstack/react-query";
 import { HistoryService } from "./generated/services/HistoryService";
 import { MetaService } from "./generated/services/MetaService";
 import { PipelinesService } from "./generated/services/PipelinesService";
+import { ProfilePresetsService } from "./generated/services/ProfilePresetsService";
+import { ProfilesService } from "./generated/services/ProfilesService";
 import { PromptsService } from "./generated/services/PromptsService";
 import { RunsService } from "./generated/services/RunsService";
 import { SettingsService } from "./generated/services/SettingsService";
@@ -61,6 +63,8 @@ export const apiClient = {
   history: HistoryService,
   settings: SettingsService,
   meta: MetaService,
+  profiles: ProfilesService,
+  profilePresets: ProfilePresetsService,
 } as const;
 
 /**

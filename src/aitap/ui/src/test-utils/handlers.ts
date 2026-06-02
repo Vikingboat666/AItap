@@ -211,31 +211,21 @@ export const pipelineDisconnectedFixture: PipelineDetailResponse = {
   },
 };
 
-export const settingsFixture: SettingsResponse & { keys: unknown[] } = {
+export const settingsFixture: SettingsResponse = {
   cost_per_run_usd: 0.01,
   cost_per_session_usd: 0.05,
   judge_model: null,
   model: "gpt-4o-mini",
   provider: "openai",
   providers_available: [],
-  // Additive field (CONTRACTS.md additive protocol, secure-settings
-  // worktree). Kept off the generated `SettingsResponse` type until
-  // checkpoint 4 runs `pnpm gen:api` — once that lands, both fixtures
-  // and the live API stay byte-for-byte identical.
-  //
-  // We default the configured provider to ``openai`` so existing
-  // Playground / Inventory tests don't trip the MissingKeyBanner /
-  // MissingKeyInlineAlert by accident. Suites that exercise the
-  // unconfigured path override this via `server.use(...)`.
-  keys: [
-    { provider: "anthropic", configured: false, source: "none", masked: null },
-    {
-      provider: "openai",
-      configured: true,
-      source: "keyring",
-      masked: "sk-...xxxx",
-    },
-  ],
+  // Default to a configured profile so existing Playground / Inventory
+  // tests don't trip MissingKeyBanner / MissingKeyInlineAlert by
+  // accident. Suites that exercise the unconfigured path override this
+  // via ``server.use(...)``.
+  defaults: {
+    model_profile_id: "prof_default",
+    judge_profile_id: null,
+  },
 };
 
 export const runDetailFixture: RunDetailResponse = {
