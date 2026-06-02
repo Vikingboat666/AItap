@@ -87,6 +87,15 @@ export function ManagePresetsDialog({
   // Esc closes the main dialog (and the confirm sub-dialog if open).
   // a11y baseline carried from PR #35 — initial focus + Escape; full
   // focus-trap waits for a follow-up.
+  //
+  // N-UI-6 follow-up: the keydown listener binds at the window scope,
+  // so a sibling modal mounted while this one is open would receive
+  // its own Esc *and* trigger ours. Today the route layout only opens
+  // dialogs from inside the Settings page (this one + the ProfilesList
+  // delete confirm, which never overlap), so the order is deterministic.
+  // A future stacking-aware modal manager (a global "topmost modal owns
+  // Esc" registry) would generalise this — track at the worktree level,
+  // not here.
   useEffect(() => {
     function onKey(event: KeyboardEvent): void {
       if (event.key === "Escape") {
@@ -103,9 +112,18 @@ export function ManagePresetsDialog({
 
   // Initial focus — move the cursor into the first row's Name input
   // when the dialog mounts so keyboard users land in a useful place.
+  // When the user opens the dialog with an empty preset list (e.g.
+  // they reset to defaults earlier and removed everything), the first
+  // input doesn't exist yet — fall back to the Close button so the
+  // focus doesn't strand behind the modal backdrop (N-UI-5).
   const firstInputRef = useRef<HTMLInputElement | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   useEffect(() => {
-    firstInputRef.current?.focus();
+    if (firstInputRef.current) {
+      firstInputRef.current.focus();
+    } else {
+      closeButtonRef.current?.focus();
+    }
   }, []);
 
   // Initial focus for the reset confirm sub-dialog — Cancel by default
@@ -198,6 +216,7 @@ export function ManagePresetsDialog({
             </div>
           </div>
           <button
+            ref={closeButtonRef}
             type="button"
             onClick={onClose}
             disabled={busy}

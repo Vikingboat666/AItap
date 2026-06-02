@@ -44,9 +44,17 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import Literal
 
 from aitap.config import Settings
 from aitap.server.routes import ProfilePreset
+
+# Mirror of the ``protocol`` Literal on the routes/__init__.py contract.
+# Pinning the type here means the seed rows below type-check without a
+# ``# type: ignore`` and pyright catches a typo (e.g. ``"openai-Compat"``)
+# at edit time rather than at first launch. A future protocol-enum rename
+# will surface as a static error on this alias too.
+ProfileProtocol = Literal["openai-compat", "anthropic"]
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -61,7 +69,7 @@ _LOGGER = logging.getLogger(__name__)
 # bump the seed-version comment if you're shipping a release that
 # expects the list to grow on upgrade (currently we only seed on first
 # launch — existing installs keep their hand-edited list).
-_SEEDED_PRESETS: tuple[tuple[str, str, str, str], ...] = (
+_SEEDED_PRESETS: tuple[tuple[str, str, ProfileProtocol, str], ...] = (
     # (name, base_url, protocol, suggested model_id)
     ("Anthropic", "https://api.anthropic.com", "anthropic", "claude-sonnet-4-6"),
     ("OpenAI", "https://api.openai.com/v1", "openai-compat", "gpt-4o-mini"),
@@ -118,7 +126,7 @@ def _seeded_presets() -> list[ProfilePreset]:
     so the chip row reads predictably out of the box.
     """
     return [
-        ProfilePreset(name=name, base_url=base_url, protocol=protocol, model_id=model_id)  # type: ignore[arg-type]
+        ProfilePreset(name=name, base_url=base_url, protocol=protocol, model_id=model_id)
         for name, base_url, protocol, model_id in _SEEDED_PRESETS
     ]
 
