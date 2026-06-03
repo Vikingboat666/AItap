@@ -29,6 +29,7 @@ from aitap.images.client import (
     ImageSize,
     ImageTokenUsage,
     register_image_provider,
+    validate_generation_kwargs,
 )
 
 # A genuine, minimal 1x1 transparent PNG. Constructed by hand once and
@@ -72,6 +73,7 @@ class MockImageClient(ImageClient):
         n: int = 1,
         seed: int | None = None,
     ) -> ImageGenerationResponse:
+        validate_generation_kwargs(prompt, n)
         # ``prompt`` and ``quality`` are accepted for ABC symmetry but
         # don't change the deterministic output. ``size`` is parsed so
         # the returned :class:`GeneratedImage.width` / ``.height`` match
@@ -103,6 +105,7 @@ class MockImageClient(ImageClient):
         quality: ImageQuality = "standard",
         n: int = 1,
     ) -> ImageCostEstimate:
+        validate_generation_kwargs(prompt, n)
         del prompt
         return ImageCostEstimate(
             usd=0.0,

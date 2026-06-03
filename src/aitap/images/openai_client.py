@@ -35,6 +35,7 @@ from aitap.images.client import (
     ImageSize,
     ImageTokenUsage,
     register_image_provider,
+    validate_generation_kwargs,
 )
 from aitap.images.pricing import UnknownImageModelError, estimate_image_cost
 
@@ -79,6 +80,7 @@ class OpenAIImageClient(ImageClient):
         n: int = 1,
         seed: int | None = None,
     ) -> ImageGenerationResponse:
+        validate_generation_kwargs(prompt, n)
         AsyncOpenAI, sdk_errors = _import_openai()
         client = AsyncOpenAI(base_url=self.base_url, api_key=self.api_key)
 
@@ -95,9 +97,13 @@ class OpenAIImageClient(ImageClient):
             # bytes.
             "response_format": "b64_json",
         }
-        # DALL-E 3 understands ``quality``; DALL-E 2 ignores it but the
-        # SDK accepts the field uniformly so we always pass it.
-        kwargs["quality"] = quality
+        # DALL-E 3 honours ``quality`` ("standard"/"hd"). Recent OpenAI
+        # SDK builds reject ``quality="hd"`` against ``model="dall-e-2"``
+        # with a 400 — drop the field for DALL-E 2 so a HD-by-default UI
+        # picker doesn't trip a wire-level error the anti-leak guard
+        # would then re-map to a confusing generic "retry" detail.
+        if not self.model.startswith("dall-e-2"):
+            kwargs["quality"] = quality
 
         try:
             raw = await client.images.generate(**kwargs)
@@ -159,6 +165,7 @@ class OpenAIImageClient(ImageClient):
         quality: ImageQuality = "standard",
         n: int = 1,
     ) -> ImageCostEstimate:
+        validate_generation_kwargs(prompt, n)
         # ``prompt`` is accepted for ABC symmetry but DALL-E pricing
         # doesn't depend on prompt length — the pricing table keys on
         # (model, size, quality, n) only.

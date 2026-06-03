@@ -30,6 +30,7 @@ from aitap.images.client import (
     get_image_client,
     list_image_providers,
     register_image_provider,
+    validate_generation_kwargs,
 )
 
 # --------------------------------------------------------------------------- #
@@ -101,6 +102,44 @@ def test_image_generation_request_rejects_oversize_n() -> None:
     call by orders of magnitude."""
     with pytest.raises(ValueError):
         ImageGenerationRequest(prompt="cat", size="1024x1024", n=11)
+
+
+# --------------------------------------------------------------------------- #
+# validate_generation_kwargs — N1 follow-up                                   #
+# --------------------------------------------------------------------------- #
+#
+# The Pydantic model above advertises ``prompt`` non-empty and
+# ``1 <= n <= 10``, but the abstract ``generate`` / ``estimate_cost``
+# take raw kwargs — the Pydantic guards only fire when the caller
+# materialises an :class:`ImageGenerationRequest`. The helper enforces
+# the same invariants on the kwargs path so every implementation gets
+# the guarantee for free; these tests pin its behaviour.
+
+
+def test_validate_generation_kwargs_accepts_typical_call() -> None:
+    # Returning ``None`` is success — nothing to assert beyond no raise.
+    validate_generation_kwargs("a cat", n=1)
+    validate_generation_kwargs("a cat", n=10)
+
+
+def test_validate_generation_kwargs_rejects_empty_prompt() -> None:
+    with pytest.raises(ValueError, match="prompt cannot be empty"):
+        validate_generation_kwargs("", n=1)
+
+
+def test_validate_generation_kwargs_rejects_whitespace_only_prompt() -> None:
+    with pytest.raises(ValueError, match="prompt cannot be empty"):
+        validate_generation_kwargs("   \n\t  ", n=1)
+
+
+def test_validate_generation_kwargs_rejects_zero_n() -> None:
+    with pytest.raises(ValueError, match=r"n must be >= 1"):
+        validate_generation_kwargs("a cat", n=0)
+
+
+def test_validate_generation_kwargs_rejects_oversize_n() -> None:
+    with pytest.raises(ValueError, match=r"n must be <= 10"):
+        validate_generation_kwargs("a cat", n=11)
 
 
 def test_generated_image_carries_bytes_and_dimensions() -> None:

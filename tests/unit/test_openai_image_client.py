@@ -190,6 +190,52 @@ async def test_generate_sends_documented_payload(
     assert call["response_format"] == "b64_json"
 
 
+async def test_generate_drops_quality_for_dall_e_2(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DALL-E 2 rejects ``quality="hd"`` at the wire level on recent
+    OpenAI SDK builds (N2 follow-up). The client drops the field when
+    the model name starts with ``dall-e-2`` so a HD-by-default UI picker
+    can't trigger a confusing 400 the anti-leak guard would re-map to
+    a generic 'retry' detail.
+    """
+    fake = _install_fake_sdk(
+        monkeypatch,
+        _FakeImagesResponse([_FakeImageRecord(_b64(b"png"))]),
+    )
+    client = OpenAIImageClient(
+        base_url="https://api.openai.com/v1",
+        model="dall-e-2",
+        api_key="sk-FAKE",
+    )
+    await client.generate("a cat", size="1024x1024", quality="hd", n=1)
+
+    call = fake.images.calls[0]
+    assert call["model"] == "dall-e-2"
+    assert "quality" not in call, (
+        "DALL-E 2 must not receive a ``quality`` field — the SDK rejects "
+        "``quality=hd`` against dall-e-2 with a 400."
+    )
+
+
+async def test_generate_validates_kwargs_before_touching_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """N1 follow-up: ImageGenerationRequest invariants (non-empty prompt,
+    1 <= n <= 10) hold on the kwargs path too. An empty prompt raises
+    ValueError before the SDK is even imported.
+    """
+    client = OpenAIImageClient(
+        base_url="https://api.openai.com/v1",
+        model="dall-e-3",
+        api_key="sk-FAKE",
+    )
+    with pytest.raises(ValueError, match="prompt cannot be empty"):
+        await client.generate("", size="1024x1024", quality="standard", n=1)
+    with pytest.raises(ValueError, match=r"n must be <= 10"):
+        await client.generate("a cat", size="1024x1024", quality="standard", n=11)
+
+
 async def test_generate_decodes_base64_into_raw_bytes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

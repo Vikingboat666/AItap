@@ -214,6 +214,13 @@ class ImageClient(abc.ABC):
         sampling; providers that don't are free to ignore it (the
         returned :class:`GeneratedImage.seed` value will be ``None`` in
         that case, signalling non-determinism to the caller).
+
+        Implementations **must** call :func:`validate_generation_kwargs`
+        at the top of the body so the invariants the
+        :class:`ImageGenerationRequest` Pydantic model advertises
+        (non-empty prompt, ``1 <= n <= 10``) hold on the kwargs path too
+        — the Pydantic guard only fires when the caller constructs the
+        Request object explicitly.
         """
 
     @abc.abstractmethod
@@ -230,7 +237,38 @@ class ImageClient(abc.ABC):
         ``prompt`` is accepted for API symmetry with the chat layer but
         most providers price purely on (size, quality, n); implementations
         are free to ignore it.
+
+        Implementations **must** call :func:`validate_generation_kwargs`
+        at the top of the body so the invariants the
+        :class:`ImageGenerationRequest` Pydantic model advertises hold
+        on the kwargs path too.
         """
+
+
+# Maximum image fan-out for a single ``generate`` call. Matches the
+# ``ImageGenerationRequest.n`` Pydantic constraint so callers see the
+# same ceiling no matter which entry point they use.
+_MAX_N_PER_CALL = 10
+
+
+def validate_generation_kwargs(prompt: str, n: int) -> None:
+    """Raise :class:`ValueError` when the kwargs path violates the
+    invariants the :class:`ImageGenerationRequest` Pydantic model
+    advertises (non-empty prompt, ``1 <= n <= 10``).
+
+    Centralising the guard here means every implementation can keep its
+    ``generate`` / ``estimate_cost`` body straightforward and the rules
+    only change in one place.
+    """
+    if not prompt or not prompt.strip():
+        raise ValueError("prompt cannot be empty")
+    if n < 1:
+        raise ValueError(f"n must be >= 1 (got {n})")
+    if n > _MAX_N_PER_CALL:
+        raise ValueError(
+            f"n must be <= {_MAX_N_PER_CALL} (got {n}); "
+            "split into multiple generate() calls if you need more."
+        )
 
 
 # --------------------------------------------------------------------------- #
