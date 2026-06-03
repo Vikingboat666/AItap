@@ -50,6 +50,18 @@ All four serial worktrees in: the multi-provider redesign is the current contrac
 
 ---
 
+## Active roadmap — image-prompt grid (Wave 5 Part B)
+
+Adds a text-to-image surface so the user can compare DALL-E prompt outputs in an `N variants × M cases` grid. Three strict-serial worktrees per `docs/wave-5-design.md` §"Part B" / §"Worktree breakdown":
+
+| # | Worktree | Status | What it added / will add |
+|---|---|---|---|
+| 1 | `wt/image-client` | ✅ **merged in PR #45** (commit hash filled at squash, 2026-06-03) | New `aitap.images` package parallel to `aitap.deep` (B·D1): `ImageClient` ABC + per-image-provider registry, `OpenAIImageClient` for DALL-E 2 + DALL-E 3 against `POST {base_url}/images/generations` (mandatory `base_url` + `api_key`, PR #40 OpenAICompatClient pattern), `MockImageClient` for offline tests, `aitap.images.factory.get_image_client_for_profile(profile, api_key)` dispatching on `profile.protocol` (`"openai-compat"` → `OpenAIImageClient`; `"anthropic"` → `ImageProviderError` with plain-language refusal), and `aitap.images.pricing` with DALL-E 2/3 rows tagged with source URL citations. PR #35 B2 anti-leak preserved: SDK exception bodies never reach `ImageProviderError.__str__`; static plain-language detail strings only. Stage discipline: no dispatch / no routes / no storage / no UI — `wt/image-dispatch` adds those next. |
+| 2 | `wt/image-dispatch` | ⏳ **next** | Dispatch image runs through `aitap.images.factory`, store decoded bytes at `.aitap/runs/<id>/images/<case_index>_<variant>.png` (B·D3), surface the cost-confirmation gate (B·D4), record `image_path` on the `RunOutput` sidecar. New `POST /api/runs` arm or sibling endpoint for image runs (TBD by design doc Decision). |
+| 3 | `wt/image-ui` | ⏳ **pending** | `N variants × M cases` grid page; click-cell-to-enlarge; per-column prompt + seed/params; no scoring widgets (B·D5 — vision judge is M5+1). en + zh i18n with parity test. |
+
+---
+
 ## Tagged checkpoints (for navigation in git history)
 
 - `wave-4-complete` → after PR #31 (the M4 self-iteration loop landed)
