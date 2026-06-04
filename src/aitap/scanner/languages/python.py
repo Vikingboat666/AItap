@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from aitap.scanner.models import (
+    CallParameters,
     CodeLocation,
     Confidence,
     Message,
@@ -36,6 +37,11 @@ from aitap.scanner.rules.prompt_extractor import (
     extract_call_parameters,
     extract_messages,
     extract_template,
+)
+from aitap.scanner.rules.template_definitions import (
+    TemplateDefinition,
+    detect_builder_function,
+    detect_prompt_constant,
 )
 
 
@@ -145,11 +151,23 @@ class _PromptSiteVisitor(ast.NodeVisitor):
     # stdlib stubs — the override signatures match.
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        # Only top-level functions count as template builders — a nested
+        # ``def build_xxx_messages`` inside another function is almost
+        # certainly a helper to the enclosing call site, which is already
+        # surfaced by ``visit_Call``.
+        if not self._scope_stack:
+            definition = detect_builder_function(node, file_imports=self._file_imports)
+            if definition is not None:
+                self.sites.append(self._build_site_from_definition(node, definition))
         self._scope_stack.append(node.name)
         self.generic_visit(node)
         self._scope_stack.pop()
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        if not self._scope_stack:
+            definition = detect_builder_function(node, file_imports=self._file_imports)
+            if definition is not None:
+                self.sites.append(self._build_site_from_definition(node, definition))
         self._scope_stack.append(node.name)
         self.generic_visit(node)
         self._scope_stack.pop()
@@ -158,6 +176,16 @@ class _PromptSiteVisitor(ast.NodeVisitor):
         self._scope_stack.append(node.name)
         self.generic_visit(node)
         self._scope_stack.pop()
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        # Only module-level assignments count as prompt constants — a
+        # function-local ``SYSTEM_PROMPT = ...`` is almost always a
+        # caller-local scratch variable, not a real template definition.
+        if not self._scope_stack:
+            definition = detect_prompt_constant(node, file_imports=self._file_imports)
+            if definition is not None:
+                self.sites.append(self._build_site_from_definition(node, definition))
+        self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
         rule = sdk_calls.match_call(node, file_imports=self._file_imports)
@@ -226,6 +254,51 @@ class _PromptSiteVisitor(ast.NodeVisitor):
             return _slugify(self._scope_stack[-1])
         # Fallback to file stem if we're at module level.
         return _slugify(self._ctx.file_path.stem) + "_call"
+
+    def _build_site_from_definition(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Assign,
+        definition: TemplateDefinition,
+    ) -> PromptSite:
+        """Wrap a :class:`TemplateDefinition` into a :class:`PromptSite`.
+
+        The location points at the ``def`` / ``=`` line so an editor jump
+        lands the user on the definition, not the first message line.
+        Confidence mirrors the SDK-call path: HIGH if at least one message
+        carries a non-UNRESOLVED template, MEDIUM otherwise.
+        """
+        line_start = getattr(node, "lineno", 1)
+        line_end = getattr(node, "end_lineno", line_start) or line_start
+        location = CodeLocation(
+            file=self._ctx.file_relpath,
+            line_start=line_start,
+            line_end=line_end,
+            col_start=getattr(node, "col_offset", None),
+            col_end=getattr(node, "end_col_offset", None),
+        )
+
+        resolved_any = any(
+            m.template_kind is not TemplateKind.UNRESOLVED for m in definition.messages
+        )
+        confidence = Confidence.HIGH if resolved_any else Confidence.MEDIUM
+
+        site_id = _stable_site_id(
+            self._ctx.file_relpath,
+            location.line_start,
+            location.col_start,
+            definition.messages,
+        )
+
+        return PromptSite(
+            id=site_id,
+            name=_slugify(definition.name),
+            provider=definition.provider,
+            location=location,
+            messages=definition.messages,
+            parameters=CallParameters(),
+            confidence=confidence,
+            tags=list(definition.tags),
+        )
 
 
 def _kwarg(call: ast.Call, name: str | None) -> ast.AST | None:
