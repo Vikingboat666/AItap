@@ -43,6 +43,7 @@ from aitap.scanner.rules.template_definitions import (
     detect_builder_function,
     detect_prompt_constant,
 )
+from aitap.scanner.rules.wrapper_calls import WrapperCall, detect_wrapper_call
 
 
 @dataclass
@@ -193,6 +194,14 @@ class _PromptSiteVisitor(ast.NodeVisitor):
             site = self._build_site(node, rule)
             if site is not None:
                 self.sites.append(site)
+        else:
+            # SDK-call rule said no; fall back to the wrapper-call rule so
+            # project-owned abstractions (``self._llm.complete(...)``) get
+            # surfaced too. The ``else`` keeps us from double-reporting
+            # the same node under two rules.
+            wrapper = detect_wrapper_call(node, file_imports=self._file_imports)
+            if wrapper is not None:
+                self.sites.append(self._build_site_from_wrapper(node, wrapper))
         self.generic_visit(node)
 
     # ---- internal helpers ----------------------------------------------------
@@ -298,6 +307,52 @@ class _PromptSiteVisitor(ast.NodeVisitor):
             parameters=CallParameters(),
             confidence=confidence,
             tags=list(definition.tags),
+        )
+
+    def _build_site_from_wrapper(
+        self,
+        call: ast.Call,
+        wrapper: WrapperCall,
+    ) -> PromptSite:
+        """Wrap a :class:`WrapperCall` into a :class:`PromptSite`.
+
+        The location points at the ``.<method>(...)`` call so an editor
+        jump lands the user on the wrapper invocation. Confidence
+        mirrors the SDK-call path: HIGH when at least one message has
+        a resolvable template, MEDIUM otherwise. The site name is
+        derived from the enclosing function so the inventory groups
+        wrapper sites alongside SDK sites in the same function.
+        """
+        location = CodeLocation(
+            file=self._ctx.file_relpath,
+            line_start=getattr(call, "lineno", 1),
+            line_end=getattr(call, "end_lineno", call.lineno) or call.lineno,
+            col_start=getattr(call, "col_offset", None),
+            col_end=getattr(call, "end_col_offset", None),
+        )
+        resolved_any = any(m.template_kind is not TemplateKind.UNRESOLVED for m in wrapper.messages)
+        confidence = Confidence.HIGH if resolved_any else Confidence.MEDIUM
+
+        site_id = _stable_site_id(
+            self._ctx.file_relpath,
+            location.line_start,
+            location.col_start,
+            wrapper.messages,
+        )
+        if self._scope_stack:
+            name = _slugify(self._scope_stack[-1])
+        else:
+            name = _slugify(self._ctx.file_path.stem) + "_wrapper"
+
+        return PromptSite(
+            id=site_id,
+            name=name,
+            provider=wrapper.provider,
+            location=location,
+            messages=wrapper.messages,
+            parameters=wrapper.parameters,
+            confidence=confidence,
+            tags=list(wrapper.tags),
         )
 
 
