@@ -31,6 +31,7 @@ from .base import (
     build_pipelines_from_edges,
     dedupe_edges,
 )
+from .cross_file_orchestration import CrossFileOrchestration
 from .intra_file_chain import IntraFileChain
 from .langchain_pipe import LangChainPipe
 from .llamaindex_engine import LlamaIndexEngine
@@ -40,6 +41,7 @@ if TYPE_CHECKING:
     from aitap.scanner.models import Pipeline, PipelineEdge, PromptSite
 
 __all__ = [
+    "CrossFileOrchestration",
     "DataflowDetector",
     "IntraFileChain",
     "LangChainPipe",
@@ -47,16 +49,26 @@ __all__ = [
     "VariableTracker",
     "build_pipelines_from_edges",
     "dedupe_edges",
+    "default_cross_file_detectors",
     "default_detectors",
     "detect_pipelines",
 ]
 
 
 def default_detectors() -> list[DataflowDetector]:
-    """The MVP detector roster. Order doesn't affect correctness — the
-    orchestrator dedupes — but it does affect which detector "wins" when
-    multiple propose the same edge with equal confidence; first wins."""
+    """The MVP intra-file detector roster. Order doesn't affect correctness
+    — the orchestrator dedupes — but it does affect which detector "wins"
+    when multiple propose the same edge with equal confidence; first wins.
+    """
     return [VariableTracker(), LangChainPipe(), IntraFileChain(), LlamaIndexEngine()]
+
+
+def default_cross_file_detectors() -> list[CrossFileOrchestration]:
+    """Detectors that need the full project view (every file + every site),
+    not just one file at a time. Currently the cross-file orchestration
+    rule (PR #51) is the only entry.
+    """
+    return [CrossFileOrchestration()]
 
 
 def detect_pipelines(
@@ -65,15 +77,31 @@ def detect_pipelines(
     sites: list[PromptSite],
     *,
     detectors: list[DataflowDetector] | None = None,
+    cross_file_detectors: list[CrossFileOrchestration] | None = None,
 ) -> list[Pipeline]:
     """Detect data-flow Pipelines across *files* given the already-extracted *sites*.
 
-    Each Python file is parsed once and shared across all detectors so the
-    cost stays linear in file count regardless of detector count. Files
+    Two passes:
+
+    1. **Intra-file**: each detector in *detectors* runs against one file's
+       AST + that file's prompt sites. Files with fewer than two sites are
+       skipped because intra-file dataflow needs something to chain.
+    2. **Cross-file**: each detector in *cross_file_detectors* gets every
+       file path + every prompt site in the project. The cross-file
+       orchestration rule (PR #51) lives here — an orchestrator file with
+       zero own LLM sites sequences ``self.<attr>.<method>(...)`` calls
+       where each ``<attr>`` resolves through ``__init__`` to a class
+       defined in another LLM-bearing file.
+
+    Each Python file is parsed once and shared across all intra-file
+    detectors so the cost stays linear regardless of detector count. Files
     that fail to parse are skipped silently — the scanner already recorded
     a ScanWarning for them earlier in the pipeline.
     """
     detectors = detectors or default_detectors()
+    cross_file_detectors = (
+        cross_file_detectors if cross_file_detectors is not None else default_cross_file_detectors()
+    )
     sites_by_file = _group_sites_by_file(sites)
 
     all_edges: list[PipelineEdge] = []
@@ -99,6 +127,14 @@ def detect_pipelines(
                 # skip its contribution for this file.
                 continue
             all_edges.extend(edges)
+
+    # Cross-file pass — see ``CrossFileOrchestration`` docstring for shape.
+    for cross_detector in cross_file_detectors:
+        try:
+            cross_edges = cross_detector.detect(files, project_root, sites)
+        except Exception:
+            continue
+        all_edges.extend(cross_edges)
 
     return build_pipelines_from_edges(dedupe_edges(all_edges), sites)
 

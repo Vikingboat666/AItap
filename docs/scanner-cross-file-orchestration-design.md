@@ -1,6 +1,13 @@
 # Scanner — cross-file orchestration recognition
 
-Status: **Draft** — investigation only, no rule landed.
+Status: **Implemented in PR #51** (2026-06-05). Rule shipped per the
+"Recommended approach for the dedicated worktree" section below.
+Verified against cc-project: pipelines went from **0** to **1**
+(`plan_day_pipeline`, 4 nodes / 3 edges, anchored by
+`DailyRunner.run`). The "do NOT" list survives intact — no agent-like
+hints, no method-name heuristics; resolution is purely
+`self.<attr> = <Class>()` through `__init__` + `from <module> import
+<Class>` imports.
 
 ## The problem
 
