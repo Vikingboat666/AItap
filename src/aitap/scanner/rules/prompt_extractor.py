@@ -188,7 +188,12 @@ def extract_messages(
 
     if isinstance(messages_node, ast.List):
         for item in messages_node.elts:
-            msg = _message_from_dict(item)
+            # Try the canonical OpenAI / Anthropic dict shape first; fall
+            # back to the LangChain tuple shape
+            # (``("system", "..."), ("user", "...")``). The fall-back
+            # preserves the rest of the pipeline — calls that already
+            # used dict shape are byte-for-byte unchanged.
+            msg = _message_from_dict(item) or _message_from_tuple(item)
             if msg is not None:
                 out.append(msg)
             else:
@@ -309,6 +314,57 @@ def _message_from_dict(node: ast.AST) -> Message | None:
                 role = Role.USER
         elif key.value == "content":
             text, kind, variables = extract_template(value)
+    return Message(role=role, template_text=text, template_kind=kind, variables=variables)
+
+
+# LangChain's ``ChatPromptTemplate.from_messages`` and many adjacent
+# helpers accept tuples ``(role, content)`` instead of dicts. The role
+# vocabulary they ship under is broader than the OpenAI / Anthropic
+# canonical set — ``human`` maps to ``user``, ``ai`` to ``assistant``,
+# ``placeholder`` is a LangChain-internal slot. We normalise on
+# ingestion so downstream tooling sees the canonical four-role enum.
+
+_TUPLE_ROLE_ALIASES: dict[str, Role] = {
+    "system": Role.SYSTEM,
+    "user": Role.USER,
+    "human": Role.USER,
+    "assistant": Role.ASSISTANT,
+    "ai": Role.ASSISTANT,
+    "tool": Role.TOOL,
+    "function": Role.TOOL,
+}
+
+
+def _message_from_tuple(node: ast.AST) -> Message | None:
+    """Parse a LangChain-style ``(role, content)`` tuple item.
+
+    Returns ``None`` when the item isn't a 2-element tuple whose first
+    element is a string-literal role we recognise. The dict-shape path
+    (:func:`_message_from_dict`) is tried first; this fall-back keeps
+    LangChain idioms working without disturbing OpenAI / Anthropic shape.
+
+    Examples accepted::
+
+        ("system", "You are helpful.")
+        ("user", "Hello.")
+        ("human", "Hi.")             # LangChain alias → Role.USER
+        ("ai", "Hi back.")           # LangChain alias → Role.ASSISTANT
+        ("user", f"Tell me about {topic}.")
+    """
+    if not isinstance(node, ast.Tuple):
+        return None
+    if len(node.elts) != 2:
+        return None
+
+    role_node, content_node = node.elts
+    if not (isinstance(role_node, ast.Constant) and isinstance(role_node.value, str)):
+        return None
+    role_text = role_node.value.lower().strip()
+    role = _TUPLE_ROLE_ALIASES.get(role_text)
+    if role is None:
+        return None
+
+    text, kind, variables = extract_template(content_node)
     return Message(role=role, template_text=text, template_kind=kind, variables=variables)
 
 
