@@ -109,15 +109,28 @@ _BUILDER_FUNC_RE = re.compile(
     re.VERBOSE,
 )
 
+# The prefix list is intentionally short — every entry has to be a word
+# that's broadly used in the LLM-prompt domain across multiple frameworks
+# (LangChain / LlamaIndex / OpenAI Cookbook / Anthropic recipes) so the
+# rule doesn't over-fit any single project's vocabulary. Project-specific
+# words (e.g. ``HEAVEN`` for the Pet Heaven sample used to vet PR #46,
+# or ``RULES`` as a leading word) are NOT included — projects whose
+# prompts use a domain-specific prefix should match through the suffix
+# form instead, which is itself the conventional shape
+# (``FOO_PROMPT``, ``BAR_TEMPLATE``, ``HEAVEN_WORLD_RULES``,
+# ``SAFETY_INSTRUCTIONS``).
 _PROMPT_CONST_RE = re.compile(
     r"""
     ^(?:
         # Prefix form: SYSTEM_PROMPT, USER_PROMPT, PROMPT_FOO, TEMPLATE_BAR
         (?:SYSTEM|USER|ASSISTANT|TOOL|PROMPT|TEMPLATE|INSTRUCTIONS?
-         |HEAVEN|RULES|RUBRIC|CRITIC|JUDGE|PERSONA)
+         |RUBRIC|CRITIC|JUDGE|PERSONA)
         _[A-Z0-9_]*
       |
-        # Suffix form: FOO_PROMPT, BAR_TEMPLATE, BAZ_INSTRUCTIONS
+        # Suffix form: FOO_PROMPT, BAR_TEMPLATE, BAZ_INSTRUCTIONS,
+        # WORLD_RULES, SAFETY_RULES — domain-specific names like
+        # HEAVEN_WORLD_RULES, GAME_RULES, BIRDS_RUBRIC are caught here
+        # without anchoring on any one project's vocabulary.
         [A-Z][A-Z0-9_]*?
         _(?:PROMPT|TEMPLATE|INSTRUCTIONS?|MESSAGE|MESSAGES|RULES|RUBRIC)
     )

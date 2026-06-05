@@ -123,7 +123,7 @@ _WRAPPER_METHODS: frozenset[str] = frozenset(
         "generate",
         "agenerate",
         "generate_response",
-        "ageneerate_response",  # typo guard — keep in case
+        "agenerate_response",
         "send",
         "asend",
         "send_messages",
