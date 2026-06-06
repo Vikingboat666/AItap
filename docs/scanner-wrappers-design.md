@@ -149,15 +149,24 @@ Total: 798 → **832 backend tests**, pyright clean, ruff clean.
 These are not blocked by anything in this PR; they extend the same
 scanner-rules pattern.
 
-1. `wt/scanner-pipelines` — recognise multi-step orchestration
+1. ✅ `wt/scanner-link-builder` (PR #56) — closed the wrapper-call →
+   builder text gap with a post-processing pass that walks the
+   enclosing function for `messages = build_xxx(...)` and copies the
+   builder's resolved text onto the wrapper site. A second sibling
+   pass deepens builder-body resolution by chasing local-Name
+   references, module-level constants, and one-level helper-call
+   returns (`_system()`) — turned 1/8 cc-project agent prompts into
+   8/8 fully resolved. See `src/aitap/scanner/rules/cross_call_resolution.py`
+   and the matching CHANGELOG entry.
+2. `wt/scanner-pipelines` — recognise multi-step orchestration
    (`daily_runner.py` ordering 6 simulation steps; the
    `interaction_engine` multi-turn loop). The current scanner still
    reports 0 pipelines despite at least three being present in
    cc-project.
-2. `wt/scanner-bare-call` — handle the `await llm(messages)` shape
+3. `wt/scanner-bare-call` — handle the `await llm(messages)` shape
    where the receiver is a callable instance, not an attribute. Needs
    local-scope tracking of `llm = get_llm_client()` bindings.
-3. Deep-scan revisit — when L2 reaches a wrapper site, ship the
+4. Deep-scan revisit — when L2 reaches a wrapper site, ship the
    wrapper class's source to the LLM and ask it to summarise
    `purpose`. The existing L2 hook (`docs/wave-1-design.md`) plugs in
    here directly.

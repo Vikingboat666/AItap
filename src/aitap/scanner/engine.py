@@ -90,6 +90,23 @@ def scan_project(
         prompts.extend(sites)
         warnings.extend(file_warnings)
 
+    # Post-processing passes that resolve prompts across call boundaries.
+    # Run order matters: (1) upgrade UNRESOLVED builder sites by walking
+    # their function body and helper calls (so cc-project's
+    # ``return [_system(), {"role": "user", "content": user_content}]``
+    # surfaces real text); (2) link UNRESOLVED wrapper-call sites to
+    # those upgraded builders so ``self._llm.complete(messages, ...)``
+    # carries the same text the builder produced. Each pass is pure
+    # post-processing — sites it can't touch pass through unchanged.
+    from aitap.scanner.rules.cross_call_resolution import (
+        link_wrapper_sites_to_builders,
+        upgrade_builder_message_lists,
+    )
+
+    sorted_py = sorted(py_files)
+    prompts = upgrade_builder_message_lists(prompts, sorted_py, root)
+    prompts = link_wrapper_sites_to_builders(prompts, sorted_py, root)
+
     providers: list[ProviderEvidence] = scan_paths_for_providers(sorted(config_files), root)
 
     # Pipeline detection — dataflow analysis runs on the same Python files
@@ -98,7 +115,7 @@ def scan_project(
     # The cost is acceptable: typical AI projects have <100 files.
     from aitap.scanner.dataflow import detect_pipelines
 
-    pipelines: list[Pipeline] = detect_pipelines(sorted(py_files), root, prompts)
+    pipelines: list[Pipeline] = detect_pipelines(sorted_py, root, prompts)
 
     return ScanResult(
         project_root=root.as_posix(),
