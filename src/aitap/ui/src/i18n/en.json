@@ -66,6 +66,8 @@
     "noPurpose": "no purpose inferred (L2 not run)",
     "messages": "messages",
     "literal": "literal",
+    "unresolvedTitle": "No prompt text resolved at L1.",
+    "unresolvedBody": "This call uses a dynamic message variable or a wrapper aitap couldn't read statically. Run deep scan to fill in the body:",
     "vars": "vars: {{names}}",
     "parameters": "parameters",
     "versions": "versions",

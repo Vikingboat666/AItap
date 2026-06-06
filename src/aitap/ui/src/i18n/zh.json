@@ -66,6 +66,8 @@
     "noPurpose": "未推断出用途（未运行 L2）",
     "messages": "消息",
     "literal": "字面量",
+    "unresolvedTitle": "L1 没拽到 prompt 文本。",
+    "unresolvedBody": "这个调用要么用了动态 messages 变量，要么用了 aitap 静态解析不了的 wrapper。跑下面的 deep scan 把内容补上：",
     "vars": "变量：{{names}}",
     "parameters": "参数",
     "versions": "版本",
