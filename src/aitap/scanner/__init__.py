@@ -228,12 +228,38 @@ def _persist_if_initialised(result: ScanResult, *, suppress_output: bool) -> Non
 
     Errors are surfaced to stderr but never raise — a persistence failure
     must not mask the scan output the user came for.
+
+    Resolution order for ``project_root`` (highest first):
+
+    1. ``AITAP_PROJECT_ROOT`` env var — the documented override; users
+       and tests rely on it to point persistence at a path that differs
+       from the scan target.
+    2. :attr:`ScanResult.project_root` — the scan target itself. This
+       is the right default for the CLI case ``aitap scan <path>`` and
+       fixes a real bug where a bare ``Settings()`` resolved to
+       :func:`Path.cwd`, which a wrapper invocation
+       (``uv --directory <aitap_repo> run aitap scan <user_project>``)
+       had already changed to the wrapper's project root — persistence
+       then tried to write into ``<aitap_repo>/.aitap/`` and failed.
+    3. ``Path.cwd()`` — only reached when neither override is set, e.g.
+       a programmatic ``scan_project(path)`` from a Python REPL that
+       lives in the same project as the scan target.
     """
+    import os
+    from pathlib import Path
+
     from aitap.config import Settings
     from aitap.store import persist_scan_result
 
+    if "AITAP_PROJECT_ROOT" in os.environ:
+        # Defer to pydantic-settings — it'll read the env var and resolve
+        # to the user's override.
+        settings = Settings()
+    else:
+        settings = Settings(project_root=Path(result.project_root))
+
     try:
-        report = persist_scan_result(Settings(), result)
+        report = persist_scan_result(settings, result)
     except Exception as exc:
         if not suppress_output:
             typer.secho(

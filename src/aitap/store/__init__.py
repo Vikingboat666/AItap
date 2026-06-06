@@ -18,6 +18,7 @@ persistence on a per-project basis.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from aitap.store import db, files, git_link
@@ -48,7 +49,9 @@ class PersistReport:
     __slots__ = (
         "db_path",
         "git_context",
+        "pipelines_removed",
         "pipelines_written",
+        "prompts_removed",
         "prompts_written",
         "providers_recorded",
         "skipped_no_aitap",
@@ -59,14 +62,18 @@ class PersistReport:
         *,
         skipped_no_aitap: bool = False,
         prompts_written: int = 0,
+        prompts_removed: int = 0,
         pipelines_written: int = 0,
+        pipelines_removed: int = 0,
         providers_recorded: int = 0,
         git_context: GitContext | None = None,
         db_path: str | None = None,
     ) -> None:
         self.skipped_no_aitap = skipped_no_aitap
         self.prompts_written = prompts_written
+        self.prompts_removed = prompts_removed
         self.pipelines_written = pipelines_written
+        self.pipelines_removed = pipelines_removed
         self.providers_recorded = providers_recorded
         self.git_context = git_context
         self.db_path = db_path
@@ -76,8 +83,8 @@ class PersistReport:
             return "PersistReport(skipped: no .aitap/ directory)"
         return (
             "PersistReport("
-            f"prompts={self.prompts_written}, "
-            f"pipelines={self.pipelines_written}, "
+            f"prompts={self.prompts_written} (-{self.prompts_removed} orphans), "
+            f"pipelines={self.pipelines_written} (-{self.pipelines_removed} orphans), "
             f"providers={self.providers_recorded})"
         )
 
@@ -112,16 +119,65 @@ def persist_scan_result(settings: Settings, result: ScanResult) -> PersistReport
     finally:
         conn.close()
 
-    # Then YAML artifacts (the part you actually want in git).
+    # Then YAML artifacts (the part you actually want in git). Each
+    # prompt is written under a name+id-suffix path; when the same
+    # source-site fingerprint changes (a real-project edit, or a
+    # scanner-rule upgrade that resolves text the prior pass missed),
+    # the id-suffix part of the filename changes too. Without explicit
+    # cleanup the prior write stays on disk forever, doubling up the
+    # inventory by name. Track on-disk filenames before writing so we
+    # can delete the leftover orphans the same way ``aitap init``
+    # didn't have to.
+    prompts_dir = settings.prompts_dir
+    pipelines_dir = settings.pipelines_dir
+    existing_prompt_files = {p.name for p in files.list_prompts(prompts_dir)}
+    existing_pipeline_files = {p.name for p in files.list_pipelines(pipelines_dir)}
+
+    written_prompt_files: set[str] = set()
     for site in result.prompts:
-        files.write_prompt(settings.prompts_dir, site)
+        path = files.write_prompt(prompts_dir, site)
+        written_prompt_files.add(path.name)
+
+    written_pipeline_files: set[str] = set()
     for pipeline in result.pipelines:
-        files.write_pipeline(settings.pipelines_dir, pipeline)
+        path = files.write_pipeline(pipelines_dir, pipeline)
+        written_pipeline_files.add(path.name)
+
+    prompts_removed = _remove_orphans(prompts_dir, existing_prompt_files, written_prompt_files)
+    pipelines_removed = _remove_orphans(
+        pipelines_dir, existing_pipeline_files, written_pipeline_files
+    )
 
     return PersistReport(
         prompts_written=len(result.prompts),
+        prompts_removed=prompts_removed,
         pipelines_written=len(result.pipelines),
+        pipelines_removed=pipelines_removed,
         providers_recorded=len(result.providers_detected),
         git_context=ctx,
         db_path=str(settings.db_path),
     )
+
+
+def _remove_orphans(
+    target_dir: Path,
+    existing_files: set[str],
+    written_files: set[str],
+) -> int:
+    """Delete every file in *existing_files* that wasn't re-written this
+    pass. Returns the count removed.
+
+    Errors removing a single file are swallowed — leaving one orphan on
+    disk is preferable to aborting the persist mid-stream. Persistence
+    failures never raise per the contract on
+    :func:`persist_scan_result`.
+    """
+    orphans = existing_files - written_files
+    removed = 0
+    for name in orphans:
+        try:
+            (target_dir / name).unlink()
+            removed += 1
+        except OSError:
+            continue
+    return removed
