@@ -157,10 +157,22 @@ class _SpaStaticFiles(StaticFiles):
                 or norm.startswith("api/")
                 or norm in {"openapi.json", "docs", "redoc"}
                 or norm.startswith(("docs/", "redoc/"))
+                or norm.startswith("assets/")
             ):
-                # API / OpenAPI / docs paths: a 404 here means the caller
-                # asked for an endpoint that genuinely doesn't exist.
-                # Surface the real 404 JSON, not a fake 200 HTML page.
+                # API / OpenAPI / docs / vite asset paths: a 404 here
+                # means the caller asked for an endpoint or asset that
+                # genuinely doesn't exist. Surface the real 404, not a
+                # fake 200 HTML page.
+                #
+                # ``assets/`` is the vite build output dir for hashed
+                # bundle files (``index-CmveJA5d.js`` etc). When a user
+                # has a stale ``index.html`` cached, their browser
+                # re-requests the old hash; if we silently returned
+                # ``index.html`` here the browser would execute the HTML
+                # body as JavaScript and the page would render blank.
+                # A real 404 makes the browser invalidate its cached
+                # ``index.html`` and re-fetch with the current hash on
+                # the next reload.
                 raise
             index = Path(self.directory) / "index.html"  # type: ignore[arg-type]
             if not index.is_file():
