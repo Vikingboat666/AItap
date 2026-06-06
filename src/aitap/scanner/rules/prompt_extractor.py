@@ -73,7 +73,63 @@ def extract_template(node: ast.AST | None) -> ExtractedTemplate:
         variables = [TemplateVariable(name=m) for m in _BRACE_VAR_RE.findall(text)]
         return (text, TemplateKind.FSTRING, variables)
 
+    # Pattern: textwrap.dedent("...") or dedent("...") — common idiom for
+    # multi-line prompts indented inside a class / function body. Real-
+    # project eval (cc-project's HEAVEN_WORLD_RULES = dedent("""...""")):
+    # without this branch the whole prompt body collapsed to UNRESOLVED
+    # even when the literal was right there. We unwrap the single string
+    # argument and recurse so nested f-strings inside dedent() resolve
+    # too. Only the one-argument shape is recognised — kwargs / multiple
+    # positionals are framework-specific and out of scope.
+    if (
+        isinstance(node, ast.Call)
+        and _is_dedent_call(node)
+        and len(node.args) == 1
+        and not node.keywords
+    ):
+        return extract_template(node.args[0])
+
+    # Pattern: ``<expr>.strip()`` / ``.lstrip()`` / ``.rstrip()`` — common
+    # trailing whitespace trim after dedent. The cc-project shape that
+    # surfaced this is ``HEAVEN_WORLD_RULES = dedent("""...""").strip()``.
+    # We recurse into the receiver so the dedent unwrap, the literal /
+    # f-string parsing, and the strip stripping all compose: the value
+    # we report is the source-literal text minus the visible whitespace
+    # noise of the wrapper call.
+    if isinstance(node, ast.Call) and _is_string_trim_call(node):
+        return extract_template(node.func.value)  # type: ignore[union-attr]
+
     return ("", TemplateKind.UNRESOLVED, [])
+
+
+def _is_dedent_call(node: ast.Call) -> bool:
+    """True for ``textwrap.dedent(...)`` or a bare ``dedent(...)`` call.
+
+    Module-prefix forms like ``tw.dedent(...)`` also match when the
+    attribute name is exactly ``"dedent"`` — we don't try to verify
+    that the receiver is actually ``textwrap`` because re-import gymna-
+    stics make that brittle, and the cost of a false positive (calling
+    a same-named local helper ``my.dedent("foo")``) is only that we
+    show ``"foo"`` instead of UNRESOLVED, which is still the right text.
+    """
+    func = node.func
+    if isinstance(func, ast.Name) and func.id == "dedent":
+        return True
+    return isinstance(func, ast.Attribute) and func.attr == "dedent"
+
+
+_STRIP_METHODS = frozenset({"strip", "lstrip", "rstrip"})
+
+
+def _is_string_trim_call(node: ast.Call) -> bool:
+    """True for ``<expr>.strip()`` / ``.lstrip()`` / ``.rstrip()`` with
+    no arguments — the canonical whitespace-trim shape. Calls that
+    pass a character set (``.strip(",")``) match too; we still extract
+    the receiver's template text because the trim only affects edges
+    and the body is what the user wants to see.
+    """
+    func = node.func
+    return isinstance(func, ast.Attribute) and func.attr in _STRIP_METHODS
 
 
 def _classify_literal(text: str) -> ExtractedTemplate:
