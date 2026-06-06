@@ -107,6 +107,23 @@ def test_spa_fallback_serves_index_html_for_client_routes() -> None:
         api_ok = client.get("/api/health")
         assert api_ok.status_code == 200
         assert api_ok.json() == {"status": "ok"}
+
+        # PR #55: /assets/<stale-hash>.js must 404, not silently fall
+        # back to index.html. A user with a cached old index.html that
+        # references the old bundle hash would otherwise get back HTML
+        # for what the browser expects to execute as JavaScript — the
+        # page renders blank with no console error a user can act on.
+        # cc-project's web-playground eval hit this immediately after
+        # PR #52 / #53 rebuilt the bundle with a new hash.
+        stale_assets = client.get("/assets/index-CM3n9w6E.js")
+        assert stale_assets.status_code == 404, (
+            f"stale asset URL should 404, not 200; got "
+            f"status={stale_assets.status_code} body[:80]={stale_assets.text[:80]!r}"
+        )
+        # Same guard for CSS and source-map siblings.
+        for suffix in (".css", ".js.map"):
+            stale = client.get(f"/assets/index-CM3n9w6E{suffix}")
+            assert stale.status_code == 404, f"/assets/...{suffix} should 404"
     finally:
         if not pre_existed:
             shutil.rmtree(static, ignore_errors=True)
