@@ -55,6 +55,70 @@ describe("PromptDetail", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows a deep-scan hint instead of an empty <pre> when template_text is empty", async () => {
+    server.use(
+      http.get(
+        "/api/prompts/:promptId",
+        () =>
+          HttpResponse.json({
+            site: {
+              id: "p_empty",
+              name: "empty_text_prompt",
+              provider: "openai",
+              location: {
+                file: "src/agents/runner.py",
+                line_start: 10,
+                line_end: 15,
+                col_start: 0,
+                col_end: 0,
+              },
+              messages: [
+                {
+                  role: "user",
+                  template_text: "",
+                  template_kind: "unresolved",
+                  variables: [],
+                },
+              ],
+              parameters: {
+                model: null,
+                temperature: null,
+                max_tokens: null,
+                top_p: null,
+                response_format: null,
+                extra: {},
+              },
+              purpose: null,
+              confidence: "medium",
+              tags: ["openai>=1.0 chat completion"],
+            },
+            versions: [],
+          }),
+        { once: true },
+      ),
+    );
+
+    renderWithProviders(<PromptDetail />, {
+      route: "/prompts/p_empty",
+      path: "/prompts/:id",
+    });
+
+    // Page title renders.
+    expect(await screen.findByText("empty_text_prompt")).toBeInTheDocument();
+
+    // Plain-language placeholder is up — title + body + CLI hint.
+    expect(
+      screen.getByText(/no prompt text resolved/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/deep scan/i),
+    ).toBeInTheDocument();
+    // The CLI hint is rendered as a code block; the file path is in there.
+    expect(
+      screen.getByText(/aitap scan --deep src\/agents\/runner\.py/i),
+    ).toBeInTheDocument();
+  });
+
   it("renders ErrorState and offers retry when the detail endpoint fails", async () => {
     server.use(
       http.get(

@@ -105,9 +105,24 @@ export function PromptDetail() {
                     </span>
                   ) : null}
                 </div>
-                <pre className="whitespace-pre-wrap rounded-md bg-ink-50 px-3 py-2 font-mono text-xs text-ink-700">
-                  {m.template_text}
-                </pre>
+                {m.template_text ? (
+                  <pre className="whitespace-pre-wrap rounded-md bg-ink-50 px-3 py-2 font-mono text-xs text-ink-700">
+                    {m.template_text}
+                  </pre>
+                ) : (
+                  <div
+                    className="rounded-md border border-dashed border-ink-200 bg-ink-50 px-3 py-3 text-xs text-ink-500"
+                    role="note"
+                  >
+                    <p className="mb-1 font-medium text-ink-600">
+                      {t("prompt.unresolvedTitle")}
+                    </p>
+                    <p>{t("prompt.unresolvedBody")}</p>
+                    <pre className="mt-2 inline-block rounded bg-ink-100 px-2 py-1 font-mono text-[11px] text-ink-700">
+                      aitap scan --deep {site.location.file}
+                    </pre>
+                  </div>
+                )}
               </li>
             ))}
           </ul>
