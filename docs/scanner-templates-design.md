@@ -150,15 +150,22 @@ Total: 729 → **798 backend tests**, pyright clean, ruff clean.
 These are not blocked by anything in this PR; they extend the same
 scanner-rules pattern.
 
-1. `wt/scanner-wrappers` — recognise project-owned wrapper clients
-   (`self._llm.complete(...)`, `BaseLLM.invoke(...)`, LangChain
-   `chains.invoke`). The cc-project agents call exactly this pattern
-   8 times; without it, the inventory still under-reports.
-2. `wt/scanner-pipelines` — recognise multi-step orchestration
+1. ✅ `wt/scanner-wrappers` (PR #47) — recognised project-owned
+   wrapper clients (`self._llm.complete(...)`, `BaseLLM.invoke(...)`,
+   LangChain `chains.invoke`). The cc-project agents matched all 8.
+2. ✅ `wt/scanner-link-builder` (PR #56) — closed the wrapper-call
+   site's UNRESOLVED-text gap by walking the enclosing function for
+   `messages = build_xxx(...)` and copying the matching builder's
+   resolved messages onto the wrapper. A second sibling pass
+   deepens builder-body resolution (Name + helper-call + module-const
+   chains, up to four hops) so 8/8 cc-project builders now resolve
+   fully and the linked wrappers carry the same text. See
+   `src/aitap/scanner/rules/cross_call_resolution.py`.
+3. `wt/scanner-pipelines` — recognise multi-step orchestration
    (`daily_runner.py` ordering 6 simulation steps; the
    `interaction_engine` multi-turn loop). The current scanner reports
    0 pipelines on cc-project despite at least three being present.
-3. Deep-scan revisit — when L2 reaches a builder with an UNRESOLVED
+4. Deep-scan revisit — when L2 reaches a builder with an UNRESOLVED
    body, ship the function source to the LLM and ask it to summarise
    `purpose`. The existing L2 hook (`docs/wave-1-design.md`) plugs in
    here directly.
