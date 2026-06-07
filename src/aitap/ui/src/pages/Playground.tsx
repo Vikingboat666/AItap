@@ -56,6 +56,7 @@ import {
 import { AutoIterateModal } from "../components/AutoIterateModal";
 import { IterationProgress } from "../components/IterationProgress";
 import { MissingKeyInlineAlert } from "../components/MissingKeyInlineAlert";
+import { PromptPreviewCard } from "../components/PromptPreviewCard";
 import { DagView } from "./components/DagView";
 import { clsx } from "../lib/clsx";
 
@@ -542,11 +543,26 @@ export function Playground() {
           </Card>
         )}
 
+        {/*
+          Prompt-template preview — shows the actual system/user text
+          the user is about to test, so the Playground stops reading
+          as "a form of empty boxes." Pipelines don't get a preview
+          (each node already surfaces text on click in the DAG); we
+          only render the card when the target is a prompt and the
+          detail fetch has resolved. Stays out of the way (collapsible
+          via its own header button) once the user has gotten the
+          mental model.
+        */}
+        {selectedTarget?.kind === "prompt" && promptDetailQ.data && (
+          <PromptPreviewCard site={promptDetailQ.data.site} />
+        )}
+
         <CaseEditor
           cases={cases}
           onChange={setCases}
           placeholderVariables={placeholderVariables}
           disabled={runMutation.isPending}
+          subtitle={t("playground.caseExplanation")}
         />
 
         {runMutation.isPending ? (

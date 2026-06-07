@@ -141,7 +141,16 @@
     "feedbackRecorded": "feedback recorded (id #{{id}})",
     "modeNode": "node",
     "modeSegment": "segment",
-    "modeEndToEnd": "end-to-end"
+    "modeEndToEnd": "end-to-end",
+    "caseExplanation": "Each case = one set of variable values. Hitting Run sends every case through the prompt once and shows you the answers side by side."
+  },
+  "promptPreview": {
+    "title": "Prompt being tested · {{name}}",
+    "subtitle": "What the model sees before your variables get filled in.",
+    "show": "Show full template",
+    "hide": "Hide template",
+    "openInInventory": "Open in Inventory",
+    "noResolvedText": "Prompt text couldn't be read from the source. Run `aitap scan --deep` to fill it in."
   },
   "history": {
     "loading": "loading…",

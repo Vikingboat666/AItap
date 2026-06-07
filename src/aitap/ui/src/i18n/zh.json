@@ -141,7 +141,16 @@
     "feedbackRecorded": "反馈已记录（id #{{id}}）",
     "modeNode": "node",
     "modeSegment": "segment",
-    "modeEndToEnd": "end-to-end"
+    "modeEndToEnd": "end-to-end",
+    "caseExplanation": "每个 case = 一组变量值。点 Run 会把所有 case 各跑一次,把答案并排显示。"
+  },
+  "promptPreview": {
+    "title": "正在测试的 prompt · {{name}}",
+    "subtitle": "模型在你填入变量值之前看到的内容。",
+    "show": "展开完整模板",
+    "hide": "收起模板",
+    "openInInventory": "在清单页打开",
+    "noResolvedText": "没能从源码读到 prompt 文本。跑一下 `aitap scan --deep` 补全。"
   },
   "history": {
     "loading": "加载中…",
