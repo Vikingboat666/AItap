@@ -12,6 +12,7 @@ fails informatively only when the user actually tries to *use* anthropic.
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING, Any, Literal
 
 from aitap import secrets as _secrets
@@ -250,4 +251,70 @@ def _safe_cost_from_tokens(model: str, input_tokens: int, output_tokens: int) ->
         return 0.0
 
 
-register_provider("anthropic", lambda model, key: AnthropicClient(model, key))
+def anthropic_factory(model: str, key: str | None) -> AnthropicClient:
+    """Build an :class:`AnthropicClient` for the legacy provider-keyed
+    factory (``register_provider("anthropic", ...)``), honouring the
+    ``ANTHROPIC_BASE_URL`` environment variable when set.
+
+    This is the seam that lets users run ``aitap scan --deep`` against
+    any Anthropic-protocol-compatible gateway — including DeepSeek's
+    ``https://api.deepseek.com/anthropic`` endpoint, a self-hosted
+    Anthropic gateway, or a future regional endpoint — without
+    waiting on the full ``wt/deep-profile-dispatch`` migration the
+    `wt/profile-cleanup` design doc flags as a follow-up.
+
+    Resolution order matches the rest of ``aitap.deep``:
+
+    1. ``ANTHROPIC_BASE_URL`` env var if non-empty (after ``.strip()``);
+    2. otherwise ``AnthropicClient``'s default
+       (``https://api.anthropic.com``) preserves byte-for-byte
+       behaviour for every existing caller that never set the var.
+
+    Whitespace-only env values (``""``, ``"   "``, ``"\\t\\n"``) are
+    treated as unset so a copy-paste accident doesn't silently break
+    the legacy path. Leading / trailing whitespace around an otherwise
+    valid URL is also stripped (URLs don't contain whitespace per
+    RFC 3986, so stripping is safe).
+
+    The new profile-keyed path (``get_client_for_profile``) is the
+    long-term answer; this hook keeps the legacy path useful in the
+    meantime. We deliberately do NOT consult the env var inside
+    :class:`AnthropicClient` itself — direct constructor callers and
+    the profile factory both pass ``base_url`` explicitly, and an
+    inner override would silently shadow their choice.
+
+    Interaction with the Anthropic SDK's own env var
+    ------------------------------------------------
+
+    The Anthropic Python SDK *also* reads ``ANTHROPIC_BASE_URL`` from
+    the environment (see ``anthropic._client``: when its constructor
+    receives ``base_url=None`` it falls back to ``os.environ.get``).
+    Because :class:`AnthropicClient` always forwards a non-``None``
+    ``base_url`` to the SDK (its constructor default is the canonical
+    Anthropic hostname, never ``None``), the SDK's own env-var read is
+    permanently shadowed — **aitap is the sole interpreter of
+    ``ANTHROPIC_BASE_URL``**.
+
+    This is intentional, not an oversight. A single owner of the
+    env-var contract means the profile path stays predictable: a
+    ``Profile`` configured with ``base_url=A`` always hits A, even
+    when the user has ``ANTHROPIC_BASE_URL=B`` exported for some
+    other tool's benefit. The cost is that users who already learned
+    the SDK's behaviour see ``ANTHROPIC_BASE_URL`` work *only* on
+    aitap's legacy factory path (this function), not on a direct
+    ``AnthropicClient(...)`` construction in code. The CHANGELOG and
+    PR #58 description spell that out for downstream users.
+
+    If we ever want the env var to behave SDK-style on direct
+    construction too, the right move is a separate aitap-namespaced
+    ``AITAP_ANTHROPIC_BASE_URL`` variable so the two contracts don't
+    overlap; this PR keeps the SDK name to minimise the
+    learning-curve barrier for the immediate DeepSeek workflow.
+    """
+    env_base = os.environ.get("ANTHROPIC_BASE_URL", "").strip()
+    if env_base:
+        return AnthropicClient(model, key, base_url=env_base)
+    return AnthropicClient(model, key)
+
+
+register_provider("anthropic", anthropic_factory)
