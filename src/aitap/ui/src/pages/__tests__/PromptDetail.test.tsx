@@ -119,6 +119,85 @@ describe("PromptDetail", () => {
     ).toBeInTheDocument();
   });
 
+  it("swaps the unresolved fallback for an L2-aware message when purpose is filled", async () => {
+    // The cc-project eval surfaced this: after the user ran
+    // ``aitap scan --deep`` and L2 filled ``purpose`` on a dispatcher
+    // call site whose ``messages`` parameter is opaque at L1 (e.g.
+    // ``call_openai(messages)`` in client.py), the unresolved message
+    // fallback still told them to run deep scan again. The body now
+    // branches on ``site.purpose``: if it's set, we point at the
+    // existing summary instead of repeating the CLI hint.
+    server.use(
+      http.get(
+        "/api/prompts/:promptId",
+        () =>
+          HttpResponse.json({
+            site: {
+              id: "p_dispatcher",
+              name: "call_openai",
+              provider: "openai",
+              location: {
+                file: "backend/app/llm/client.py",
+                line_start: 266,
+                line_end: 271,
+                col_start: 0,
+                col_end: 0,
+              },
+              messages: [
+                {
+                  role: "user",
+                  template_text: "",
+                  template_kind: "unresolved",
+                  variables: [],
+                },
+              ],
+              parameters: {
+                model: null,
+                temperature: null,
+                max_tokens: null,
+                top_p: null,
+                response_format: null,
+                extra: {},
+              },
+              purpose:
+                "Sends a chat completion request to OpenAI with a user message; expects a user message string as input.",
+              confidence: "medium",
+              tags: ["openai>=1.0 chat completion"],
+            },
+            versions: [],
+          }),
+        { once: true },
+      ),
+    );
+
+    renderWithProviders(<PromptDetail />, {
+      route: "/prompts/p_dispatcher",
+      path: "/prompts/:id",
+    });
+
+    expect(await screen.findByText("call_openai")).toBeInTheDocument();
+
+    // New L2-aware fallback fires: title says "built at runtime", body
+    // points at purpose at the top of the page.
+    expect(
+      screen.getByText(/built at runtime/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/purpose summary at the top/i),
+    ).toBeInTheDocument();
+
+    // The CLI hint is gone — the user already ran deep scan; we
+    // don't tell them to run it again. queryByText returns null when
+    // the element is absent.
+    expect(
+      screen.queryByText(/aitap scan --deep backend\/app\/llm\/client\.py/i),
+    ).toBeNull();
+    // And the original "Run deep scan" hint copy is gone too.
+    expect(
+      screen.queryByText(/run deep scan to fill in the body/i),
+    ).toBeNull();
+  });
+
   it("renders ErrorState and offers retry when the detail endpoint fails", async () => {
     server.use(
       http.get(

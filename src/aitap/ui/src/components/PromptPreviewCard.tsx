@@ -119,6 +119,19 @@ export function PromptPreviewCard({
                 <pre className="whitespace-pre-wrap rounded-md bg-ink-50 px-3 py-2 font-mono text-xs text-ink-700">
                   {m.template_text}
                 </pre>
+              ) : site.purpose ? (
+                // Mirror of the PromptDetail branch (see comment there):
+                // L2 already filled `purpose`, so don't tell the user to
+                // re-run deep scan. Point them at the existing summary.
+                <div
+                  className="rounded-md border border-dashed border-ink-200 bg-ink-50 px-3 py-3 text-xs text-ink-500"
+                  role="note"
+                >
+                  <p className="mb-1 font-medium text-ink-600">
+                    {t("prompt.unresolvedAfterL2Title")}
+                  </p>
+                  <p>{t("prompt.unresolvedAfterL2Body")}</p>
+                </div>
               ) : (
                 <div
                   className="rounded-md border border-dashed border-ink-200 bg-ink-50 px-3 py-3 text-xs text-ink-500"

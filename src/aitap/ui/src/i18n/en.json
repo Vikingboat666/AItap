@@ -68,6 +68,8 @@
     "literal": "literal",
     "unresolvedTitle": "No prompt text resolved at L1.",
     "unresolvedBody": "This call uses a dynamic message variable or a wrapper aitap couldn't read statically. Run deep scan to fill in the body:",
+    "unresolvedAfterL2Title": "Prompt is built at runtime — no literal text to extract.",
+    "unresolvedAfterL2Body": "Deep scan already ran. See the purpose summary at the top of this page for what aitap was able to infer.",
     "vars": "vars: {{names}}",
     "parameters": "parameters",
     "versions": "versions",
