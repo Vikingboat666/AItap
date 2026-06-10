@@ -68,6 +68,8 @@
     "literal": "字面量",
     "unresolvedTitle": "L1 没拽到 prompt 文本。",
     "unresolvedBody": "这个调用要么用了动态 messages 变量，要么用了 aitap 静态解析不了的 wrapper。跑下面的 deep scan 把内容补上：",
+    "unresolvedAfterL2Title": "Prompt 在运行时拼成 —— 没有字面文本可以提取。",
+    "unresolvedAfterL2Body": "deep scan 已经跑过了。看页面顶部的 purpose,那是 aitap 能推断出的总结。",
     "vars": "变量：{{names}}",
     "parameters": "参数",
     "versions": "版本",

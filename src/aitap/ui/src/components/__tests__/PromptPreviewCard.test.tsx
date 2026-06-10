@@ -88,6 +88,7 @@ describe("PromptPreviewCard", () => {
 
   it("shows the PR #53 unresolved fallback per message instead of an empty <pre>", () => {
     const s = site({
+      purpose: null,
       messages: [
         {
           role: "user",
@@ -106,6 +107,48 @@ describe("PromptPreviewCard", () => {
       { selector: "pre" },
     );
     expect(hint).toBeInTheDocument();
+  });
+
+  it("swaps the unresolved fallback for an L2-aware message when purpose is filled", async () => {
+    // Mirror of the PromptDetail.tsx behaviour: once deep scan has run
+    // and filled `purpose`, the per-message empty-text fallback must
+    // stop telling the user to re-run deep scan. The cc-project eval
+    // surfaced this on `call_openai` in client.py — purpose was set
+    // but the message body still said "Run deep scan to fill it in",
+    // which contradicted the L2 summary already on screen.
+    const s = site({
+      purpose:
+        "Sends a chat completion request to OpenAI with a user message; expects a user message string as input.",
+      messages: [
+        {
+          role: "user",
+          template_text: "",
+          template_kind: "unresolved",
+          variables: [],
+        },
+      ],
+    });
+    renderWithProviders(<PromptPreviewCard site={s} />);
+
+    // New L2-aware fallback fires: title says "built at runtime",
+    // body points at purpose at the top of the page.
+    expect(
+      screen.getByText(/built at runtime/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/purpose summary at the top/i),
+    ).toBeInTheDocument();
+
+    // The CLI hint is gone — the user already ran deep scan.
+    expect(
+      screen.queryByText(
+        "aitap scan --deep backend/app/llm/prompt_templates.py",
+        { selector: "pre" },
+      ),
+    ).toBeNull();
+    expect(
+      screen.queryByText(/run deep scan to fill in the body/i),
+    ).toBeNull();
   });
 
   it("collapses to a one-line preview when the user clicks Hide, then re-expands", async () => {

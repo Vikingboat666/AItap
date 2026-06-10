@@ -109,6 +109,20 @@ export function PromptDetail() {
                   <pre className="whitespace-pre-wrap rounded-md bg-ink-50 px-3 py-2 font-mono text-xs text-ink-700">
                     {m.template_text}
                   </pre>
+                ) : site.purpose ? (
+                  // L2 already ran (deep scan filled `purpose`). Don't tell
+                  // the user to re-run deep scan — they already did. Point
+                  // them at the purpose summary that's already on this page
+                  // and explain why there's no literal text to extract.
+                  <div
+                    className="rounded-md border border-dashed border-ink-200 bg-ink-50 px-3 py-3 text-xs text-ink-500"
+                    role="note"
+                  >
+                    <p className="mb-1 font-medium text-ink-600">
+                      {t("prompt.unresolvedAfterL2Title")}
+                    </p>
+                    <p>{t("prompt.unresolvedAfterL2Body")}</p>
+                  </div>
                 ) : (
                   <div
                     className="rounded-md border border-dashed border-ink-200 bg-ink-50 px-3 py-3 text-xs text-ink-500"
