@@ -50,8 +50,10 @@ class PersistReport:
         "db_path",
         "git_context",
         "pipelines_removed",
+        "pipelines_removed_from_db",
         "pipelines_written",
         "prompts_removed",
+        "prompts_removed_from_db",
         "prompts_written",
         "providers_recorded",
         "skipped_no_aitap",
@@ -63,8 +65,10 @@ class PersistReport:
         skipped_no_aitap: bool = False,
         prompts_written: int = 0,
         prompts_removed: int = 0,
+        prompts_removed_from_db: int = 0,
         pipelines_written: int = 0,
         pipelines_removed: int = 0,
+        pipelines_removed_from_db: int = 0,
         providers_recorded: int = 0,
         git_context: GitContext | None = None,
         db_path: str | None = None,
@@ -72,8 +76,10 @@ class PersistReport:
         self.skipped_no_aitap = skipped_no_aitap
         self.prompts_written = prompts_written
         self.prompts_removed = prompts_removed
+        self.prompts_removed_from_db = prompts_removed_from_db
         self.pipelines_written = pipelines_written
         self.pipelines_removed = pipelines_removed
+        self.pipelines_removed_from_db = pipelines_removed_from_db
         self.providers_recorded = providers_recorded
         self.git_context = git_context
         self.db_path = db_path
@@ -81,10 +87,20 @@ class PersistReport:
     def __repr__(self) -> str:
         if self.skipped_no_aitap:
             return "PersistReport(skipped: no .aitap/ directory)"
+        # ``prompts_removed`` and ``prompts_removed_from_db`` track the
+        # YAML directory cleanup vs the sqlite row cleanup separately.
+        # They are *normally* equal in healthy state (every persisted
+        # prompt has both a YAML file and a DB row), but the bug PR #60
+        # fixes was that PR #54 only cleaned the YAML half — the DB
+        # half stayed and the server kept serving stale rows. Reporting
+        # them separately keeps the asymmetry honest while a normal
+        # run shows the same number twice.
         return (
             "PersistReport("
-            f"prompts={self.prompts_written} (-{self.prompts_removed} orphans), "
-            f"pipelines={self.pipelines_written} (-{self.pipelines_removed} orphans), "
+            f"prompts={self.prompts_written} "
+            f"(-{self.prompts_removed} yaml, -{self.prompts_removed_from_db} db orphans), "
+            f"pipelines={self.pipelines_written} "
+            f"(-{self.pipelines_removed} yaml, -{self.pipelines_removed_from_db} db orphans), "
             f"providers={self.providers_recorded})"
         )
 
@@ -96,6 +112,28 @@ def persist_scan_result(settings: Settings, result: ScanResult) -> PersistReport
 
     No-ops (and reports ``skipped_no_aitap=True``) when the .aitap directory
     doesn't exist — caller should not pre-create it.
+
+    Atomicity boundary
+    ------------------
+
+    The function runs in two halves that are intentionally NOT in one
+    transaction together:
+
+    1. Sqlite ``upsert`` + ``DELETE orphans`` — wrapped in a single
+       transaction (line below). Either all writes/deletes commit, or
+       none do — including the cascaded ``prompt_versions`` /
+       ``iterations`` deletes.
+    2. YAML writes + orphan unlinks — best-effort filesystem ops
+       that run **after** the DB transaction commits.
+
+    If a YAML unlink fails after the DB commit (disk full, permissions),
+    the inventory is still internally consistent because the server's
+    source of truth is sqlite (``read_prompts`` in
+    ``server/routes/prompts.py``). Disk has a stray YAML; the user-
+    facing surface is correct. The alternative — rolling back the DB
+    delete because a filesystem op failed — would put the server in a
+    *worse* state (stale rows surface in the API while the YAML side
+    appears trimmed). So DB-leads is the deliberate choice.
     """
     aitap_dir = settings.project_root / settings.aitap_dir
     if not aitap_dir.exists():
@@ -106,16 +144,44 @@ def persist_scan_result(settings: Settings, result: ScanResult) -> PersistReport
     # SQLite first. If something blows up halfway through writing YAMLs
     # we still want the DB rows recorded — re-running the scan will
     # idempotently re-emit the YAMLs without needing to re-detect.
+    #
+    # Orphan cleanup, both prompts and pipelines: snapshot the existing
+    # ids BEFORE the upsert pass, then DELETE rows whose id isn't in the
+    # scan result. PR #54 cleaned the YAML half of this; the DB half was
+    # left and the server (which reads from sqlite, not from disk) kept
+    # serving stale rows forever. cc-project hit this in the live eval:
+    # deep scan rewrote 5 prompts with new fingerprints, the old YAMLs
+    # got cleaned up, but the old DB rows stayed and the user still saw
+    # 49 prompts in the Inventory (5 of them stale) when the disk only
+    # had 44 YAMLs.
+    #
+    # The ``ON DELETE CASCADE`` foreign keys in ``prompt_versions`` and
+    # ``iterations`` mean version history and in-flight iteration
+    # sessions for orphan prompts disappear with their parent row. That
+    # is the same fate the YAML-only cleanup already imposed (the YAML
+    # was the user-visible artifact); we are merely catching the DB up.
+    prompts_removed_from_db = 0
+    pipelines_removed_from_db = 0
     conn = db.connect(settings.db_path)
     try:
         db.init_db(conn)
         with db.transaction(conn):
+            existing_prompt_ids = db.read_prompt_ids(conn)
+            existing_pipeline_ids = db.read_pipeline_ids(conn)
+
             for site in result.prompts:
                 db.upsert_prompt(conn, site, last_commit=ctx.commit)
             for pipeline in result.pipelines:
                 db.upsert_pipeline(conn, pipeline, last_commit=ctx.commit)
             for ev in result.providers_detected:
                 db.record_provider_evidence(conn, str(settings.project_root), ev)
+
+            written_prompt_ids = {site.id for site in result.prompts}
+            written_pipeline_ids = {pipeline.id for pipeline in result.pipelines}
+            prompt_orphan_ids = existing_prompt_ids - written_prompt_ids
+            pipeline_orphan_ids = existing_pipeline_ids - written_pipeline_ids
+            prompts_removed_from_db = db.delete_prompts_by_ids(conn, prompt_orphan_ids)
+            pipelines_removed_from_db = db.delete_pipelines_by_ids(conn, pipeline_orphan_ids)
     finally:
         conn.close()
 
@@ -151,8 +217,10 @@ def persist_scan_result(settings: Settings, result: ScanResult) -> PersistReport
     return PersistReport(
         prompts_written=len(result.prompts),
         prompts_removed=prompts_removed,
+        prompts_removed_from_db=prompts_removed_from_db,
         pipelines_written=len(result.pipelines),
         pipelines_removed=pipelines_removed,
+        pipelines_removed_from_db=pipelines_removed_from_db,
         providers_recorded=len(result.providers_detected),
         git_context=ctx,
         db_path=str(settings.db_path),

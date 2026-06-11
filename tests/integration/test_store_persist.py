@@ -187,3 +187,273 @@ def test_persist_orphan_removal_handles_missing_file_gracefully(
     report = persist_scan_result(settings, scan_project(fixture))
     assert report.prompts_removed == 0
     assert report.pipelines_removed == 0
+
+
+# --------------------------------------------------------------------------- #
+# DB orphan cleanup (PR #60) — completes the half-fix PR #54 shipped          #
+# --------------------------------------------------------------------------- #
+#
+# PR #54 cleaned orphan YAML files. PR #60 adds the matching DB-row cleanup
+# the server-facing read path actually depends on. Without these tests, a
+# regression that drops the DELETE step would only surface through a
+# live-browser eval — exactly the bug cc-project hit between PR #58 and
+# PR #60.
+
+
+def test_persist_removes_orphan_db_rows_on_rescan(
+    initialised_project: Path,
+) -> None:
+    """When a prompt site disappears between scans (deleted code, or a
+    fingerprint change that makes the same site present under a new
+    id), the prior DB row must be deleted. Before PR #60 the row
+    stayed forever and ``read_prompts`` kept returning ghosts — the
+    cc-project Inventory still listed five stale prompts after the
+    deep scan rewrote their fingerprints.
+    """
+    fixture = Path(__file__).resolve().parents[1] / "fixtures" / "openai_basic"
+    settings = Settings(project_root=initialised_project)
+
+    # First persist with the full scan.
+    first = scan_project(fixture)
+    persist_scan_result(settings, first)
+    assert first.prompts, "fixture should produce at least one prompt"
+    doomed_id = first.prompts[0].id
+
+    # Second persist drops one prompt — simulating either a deleted
+    # call site OR a fingerprint shift where the old id is no longer
+    # written.
+    survivor = first.model_copy(update={"prompts": first.prompts[1:]})
+    report = persist_scan_result(settings, survivor)
+
+    # The doomed id is gone from the DB.
+    conn = db.connect(settings.db_path)
+    try:
+        live_ids = {row[0] for row in conn.execute("SELECT id FROM prompts")}
+    finally:
+        conn.close()
+    assert doomed_id not in live_ids
+    assert live_ids == {site.id for site in survivor.prompts}
+
+    # And the report calls it out.
+    assert report.prompts_removed_from_db == 1
+
+
+def test_persist_db_orphan_cleanup_cascades_to_prompt_versions(
+    initialised_project: Path,
+) -> None:
+    """``prompt_versions.prompt_id`` has ``ON DELETE CASCADE`` in the
+    schema, and :func:`db.connect` sets ``PRAGMA foreign_keys=ON``.
+    Pin both together: when an orphan prompt row is deleted, any
+    version rows that referenced it must vanish too — otherwise we
+    end up with dangling-FK rows the next sqlite migration could
+    refuse to touch.
+    """
+    fixture = Path(__file__).resolve().parents[1] / "fixtures" / "openai_basic"
+    settings = Settings(project_root=initialised_project)
+
+    first = scan_project(fixture)
+    persist_scan_result(settings, first)
+    doomed_id = first.prompts[0].id
+
+    # Plant a synthetic prompt_versions row referencing the doomed
+    # prompt. Raw INSERT (not history.create_version) so the test pins
+    # cascade-on-delete behaviour, not the version-write path. If the
+    # schema grows a new NOT NULL column on prompt_versions, this test
+    # will fail — that's the intended sentinel.
+    conn = db.connect(settings.db_path)
+    try:
+        with db.transaction(conn):
+            conn.execute(
+                """
+                INSERT INTO prompt_versions (
+                    prompt_id, version, template_json, parameters_json,
+                    created_by, note
+                ) VALUES (?, 1, '[]', '{}', 'iteration', 'planted-for-test')
+                """,
+                (doomed_id,),
+            )
+        version_rows_before = conn.execute(
+            "SELECT COUNT(*) FROM prompt_versions WHERE prompt_id = ?",
+            (doomed_id,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert version_rows_before == 1, "planted version row should exist"
+
+    # Re-persist without the doomed prompt — cascade should empty the
+    # prompt_versions table for that prompt id.
+    survivor = first.model_copy(update={"prompts": first.prompts[1:]})
+    persist_scan_result(settings, survivor)
+
+    conn = db.connect(settings.db_path)
+    try:
+        version_rows_after = conn.execute(
+            "SELECT COUNT(*) FROM prompt_versions WHERE prompt_id = ?",
+            (doomed_id,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert version_rows_after == 0
+
+
+def test_persist_db_orphan_cleanup_reports_zero_when_no_orphans(
+    initialised_project: Path,
+) -> None:
+    """Idempotency: re-persisting the same scan yields zero DB orphans.
+    The bug PR #60 fixes is asymmetric — adding DELETE only matters
+    when something IS orphaned. Pin the no-op path too so a careless
+    refactor doesn't accidentally start deleting valid rows.
+    """
+    fixture = Path(__file__).resolve().parents[1] / "fixtures" / "openai_basic"
+    settings = Settings(project_root=initialised_project)
+    result = scan_project(fixture)
+
+    persist_scan_result(settings, result)
+    report = persist_scan_result(settings, result)
+
+    assert report.prompts_removed_from_db == 0
+    assert report.pipelines_removed_from_db == 0
+
+
+def test_persist_yaml_orphan_count_unchanged_by_db_cleanup_addition(
+    initialised_project: Path,
+) -> None:
+    """Belt-and-braces backward-compat check for PR #54's behaviour.
+    PR #60 adds ``prompts_removed_from_db`` as a new field; the
+    existing ``prompts_removed`` (the YAML cleanup count) must keep
+    its prior semantics. A regression that mixed the counters would
+    break downstream consumers (CLI summary line, integration tests
+    in ``test_store_persist`` above).
+    """
+    fixture = Path(__file__).resolve().parents[1] / "fixtures" / "openai_basic"
+    settings = Settings(project_root=initialised_project)
+
+    first = scan_project(fixture)
+    persist_scan_result(settings, first)
+
+    # Plant a YAML with an id no scan would produce. No DB row for it.
+    stale = settings.prompts_dir / "yaml_only_orphan.cafef00d00.prompt.yaml"
+    stale.write_text("id: cafef00d00ff\n", encoding="utf-8")
+
+    report = persist_scan_result(settings, first)
+
+    # YAML count picks up the stale file (PR #54 semantics).
+    assert report.prompts_removed == 1
+    # DB count is zero — the planted file had no matching row.
+    assert report.prompts_removed_from_db == 0
+    assert not stale.exists()
+
+
+def test_persist_db_orphan_cleanup_cascades_to_iterations(
+    initialised_project: Path,
+) -> None:
+    """Parallel to the ``prompt_versions`` cascade test above —
+    ``iterations.prompt_id`` also carries ``ON DELETE CASCADE`` and
+    must vanish with its parent prompt. Without this sibling
+    assertion, a future schema rename that breaks the iterations FK
+    has no sentinel.
+    """
+    fixture = Path(__file__).resolve().parents[1] / "fixtures" / "openai_basic"
+    settings = Settings(project_root=initialised_project)
+
+    first = scan_project(fixture)
+    persist_scan_result(settings, first)
+    doomed_id = first.prompts[0].id
+
+    # Plant a synthetic iterations row. NOT NULL columns: id, prompt_id,
+    # round, session_id, is_baseline, weighted_score, per_dim_scores,
+    # started_at. (See DDL_ITERATIONS in db.py.)
+    conn = db.connect(settings.db_path)
+    try:
+        with db.transaction(conn):
+            conn.execute(
+                """
+                INSERT INTO iterations (
+                    id, prompt_id, round, session_id, is_baseline,
+                    weighted_score, per_dim_scores, started_at
+                ) VALUES (
+                    'iter_planted_for_test',
+                    ?,
+                    1,
+                    'session_planted',
+                    1,
+                    0.5,
+                    '{}',
+                    datetime('now')
+                )
+                """,
+                (doomed_id,),
+            )
+        iter_rows_before = conn.execute(
+            "SELECT COUNT(*) FROM iterations WHERE prompt_id = ?",
+            (doomed_id,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert iter_rows_before == 1, "planted iteration row should exist"
+
+    # Re-persist without the doomed prompt — cascade should empty the
+    # iterations table for that prompt id.
+    survivor = first.model_copy(update={"prompts": first.prompts[1:]})
+    persist_scan_result(settings, survivor)
+
+    conn = db.connect(settings.db_path)
+    try:
+        iter_rows_after = conn.execute(
+            "SELECT COUNT(*) FROM iterations WHERE prompt_id = ?",
+            (doomed_id,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert iter_rows_after == 0
+
+
+def test_persist_removes_orphan_pipeline_db_rows_on_rescan(
+    initialised_project: Path,
+) -> None:
+    """Mirror of :func:`test_persist_removes_orphan_db_rows_on_rescan`
+    for the pipelines table. Without this test, commenting out the
+    ``delete_pipelines_by_ids`` call inside ``persist_scan_result``
+    would leave the entire suite green — and we would only learn about
+    the regression when a real project produces a pipeline whose
+    fingerprint shifts between scans.
+
+    Uses a hand-built :class:`Pipeline` because the openai_basic
+    fixture doesn't produce pipelines; the test only needs the DB
+    row + the round-trip through ``persist_scan_result``.
+    """
+    from aitap.scanner.models import Pipeline
+
+    fixture = Path(__file__).resolve().parents[1] / "fixtures" / "openai_basic"
+    settings = Settings(project_root=initialised_project)
+
+    # First persist with a synthetic pipeline added to the result.
+    first = scan_project(fixture)
+    doomed_pipeline = Pipeline(
+        id="pipe_doomed_for_test",
+        name="doomed_pipeline",
+        nodes=[],
+        edges=[],
+    )
+    first_with_pipeline = first.model_copy(update={"pipelines": [doomed_pipeline]})
+    persist_scan_result(settings, first_with_pipeline)
+
+    # Sanity: row landed.
+    conn = db.connect(settings.db_path)
+    try:
+        rows = {r[0] for r in conn.execute("SELECT id FROM pipelines")}
+    finally:
+        conn.close()
+    assert doomed_pipeline.id in rows
+
+    # Second persist drops the pipeline.
+    second = first.model_copy(update={"pipelines": []})
+    report = persist_scan_result(settings, second)
+
+    conn = db.connect(settings.db_path)
+    try:
+        rows_after = {r[0] for r in conn.execute("SELECT id FROM pipelines")}
+    finally:
+        conn.close()
+    assert doomed_pipeline.id not in rows_after
+    assert report.pipelines_removed_from_db == 1

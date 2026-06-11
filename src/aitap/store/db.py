@@ -418,3 +418,73 @@ def read_pipelines(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Return all pipeline rows ordered by first detection time."""
     cur = conn.execute("SELECT * FROM pipelines ORDER BY first_seen_at")
     return cur.fetchall()
+
+
+def read_prompt_ids(conn: sqlite3.Connection) -> set[str]:
+    """Snapshot of every ``prompts.id`` currently in the DB.
+
+    Used by :func:`aitap.store.persist_scan_result` to compute the
+    orphan set (existing - written) when re-persisting a scan whose
+    fingerprints have shifted.
+    """
+    return {row[0] for row in conn.execute("SELECT id FROM prompts")}
+
+
+def read_pipeline_ids(conn: sqlite3.Connection) -> set[str]:
+    """Snapshot of every ``pipelines.id`` currently in the DB.
+
+    Mirror of :func:`read_prompt_ids` for the pipelines table.
+    """
+    return {row[0] for row in conn.execute("SELECT id FROM pipelines")}
+
+
+def delete_prompts_by_ids(conn: sqlite3.Connection, ids: set[str]) -> int:
+    """Delete prompt rows whose primary key is in *ids*. Returns the
+    rowcount sqlite reports.
+
+    The schema declares ``ON DELETE CASCADE`` for the foreign keys in
+    ``prompt_versions`` and ``iterations``, so version history and
+    in-flight iteration sessions for the orphan prompts are cleaned
+    transitively. PRAGMA ``foreign_keys=ON`` is set by
+    :func:`connect`, so the cascade actually fires; this docstring is
+    the place future maintainers will look when they wonder why
+    deleting a single prompt also empties two other tables.
+
+    Idempotent: passing an empty set is a no-op and returns ``0``.
+    The early return is **necessary, not polite** — an empty ``IN ()``
+    clause is a sqlite syntax error. Passing ids that don't exist
+    returns ``0`` (sqlite silently matches nothing). Errors propagate
+    so the surrounding transaction can roll back.
+    """
+    if not ids:
+        return 0
+    # f-string interpolates the placeholder *count* (`?, ?, ?`), not
+    # any user value — the actual ids are still parameter-bound below.
+    # sqlite3's driver has no array-bind, so counted-placeholder
+    # generation is the standard pattern for ``IN``.
+    placeholders = ",".join("?" for _ in ids)
+    cur = conn.execute(
+        f"DELETE FROM prompts WHERE id IN ({placeholders})",
+        tuple(ids),
+    )
+    return cur.rowcount
+
+
+def delete_pipelines_by_ids(conn: sqlite3.Connection, ids: set[str]) -> int:
+    """Mirror of :func:`delete_prompts_by_ids` for the ``pipelines``
+    table. At the time of writing no other table foreign-keys
+    ``pipelines.id``, so deletion is a single-row affair; if a future
+    migration adds an FK, add the cascade note here so the next
+    maintainer doesn't have to grep the DDL to find it.
+
+    Same empty-set / parameter-bound rules as
+    :func:`delete_prompts_by_ids`.
+    """
+    if not ids:
+        return 0
+    placeholders = ",".join("?" for _ in ids)
+    cur = conn.execute(
+        f"DELETE FROM pipelines WHERE id IN ({placeholders})",
+        tuple(ids),
+    )
+    return cur.rowcount
