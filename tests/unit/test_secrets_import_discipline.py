@@ -67,6 +67,17 @@ _ALLOWED_FILES_PROFILE: frozenset[str] = frozenset(
         # raw key leaves ``aitap.secrets`` for the multi-provider
         # client family. Added in wt/profile-client (PR #40).
         "server/routes/profiles.py",
+        # ``aitap scan --deep [--profile <id>]`` resolves the per-profile
+        # key inside ``_build_profile_client`` and hands it to
+        # ``deep.factory.get_client_for_profile_config``. Added in
+        # wt/deep-profile-dispatch (PR #61).
+        #
+        # The "single seam" contract from PR #40 is *per entry point*:
+        # ``server/routes/profiles.py`` is the single seam for the HTTP
+        # request path; ``scanner/__init__.py`` is the single seam for
+        # the offline CLI path. Each path has exactly one seam — not
+        # two unbounded seams across the codebase.
+        "scanner/__init__.py",
     }
 )
 

@@ -25,10 +25,46 @@ profile-keyed dispatch helper bumping its contract version. Treat
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Literal
+
 from aitap.deep.anthropic_client import AnthropicClient
 from aitap.deep.client import LLMClient
 from aitap.deep.openai_client import OpenAICompatClient
-from aitap.server.routes import Profile
+
+if TYPE_CHECKING:
+    from aitap.config import ProfileConfig
+    from aitap.server.routes import Profile
+
+
+def _dispatch_client(
+    *,
+    protocol: Literal["openai-compat", "anthropic"],
+    model_id: str,
+    base_url: str,
+    api_key: str,
+) -> LLMClient:
+    """Shared protocol → :class:`LLMClient` dispatch.
+
+    Pulled out so the two public wrappers below (one for the API-facing
+    ``Profile``, one for the config-facing ``ProfileConfig``) share
+    identical wiring. Adding a new protocol arm here updates both
+    surfaces at once.
+    """
+    if protocol == "anthropic":
+        return AnthropicClient(
+            model=model_id,
+            api_key=api_key,
+            base_url=base_url,
+        )
+    # The only other documented protocol is "openai-compat"; the
+    # input Literal already constrains the value, so we don't bother
+    # with an else / raise — pyright catches a future unhandled arm
+    # at the call site.
+    return OpenAICompatClient(
+        base_url=base_url,
+        model=model_id,
+        api_key=api_key,
+    )
 
 
 def get_client_for_profile(profile: Profile, api_key: str) -> LLMClient:
@@ -58,21 +94,35 @@ def get_client_for_profile(profile: Profile, api_key: str) -> LLMClient:
         does no network work; the SDK is only imported when the first
         ``chat`` / ``estimate_cost`` call lands on the returned client.
     """
-    if profile.protocol == "anthropic":
-        return AnthropicClient(
-            model=profile.model_id,
-            api_key=api_key,
-            base_url=profile.base_url,
-        )
-    # The only other documented protocol is "openai-compat"; the
-    # Profile.protocol Literal already constrains the input, so we
-    # don't bother with an else / raise — pyright catches a future
-    # unhandled arm at the call site.
-    return OpenAICompatClient(
+    return _dispatch_client(
+        protocol=profile.protocol,
+        model_id=profile.model_id,
         base_url=profile.base_url,
-        model=profile.model_id,
         api_key=api_key,
     )
 
 
-__all__ = ["get_client_for_profile"]
+def get_client_for_profile_config(profile: ProfileConfig, api_key: str) -> LLMClient:
+    """Build an :class:`LLMClient` from a config-layer
+    :class:`~aitap.config.ProfileConfig`.
+
+    Same dispatch contract as :func:`get_client_for_profile`, but
+    accepts the persistent shape (no derived ``key_configured`` /
+    ``key_source`` fields). The CLI path uses this so
+    ``aitap scan --deep --profile <id>`` doesn't have to construct an
+    API-facing :class:`Profile` from a config-facing
+    :class:`ProfileConfig` just to round-trip through the factory.
+
+    Layering note: this is the deliberate ``deep`` → ``config``
+    direction; ``config`` never imports ``deep``. The TYPE_CHECKING
+    import keeps the runtime cost zero for the no-profile call paths.
+    """
+    return _dispatch_client(
+        protocol=profile.protocol,
+        model_id=profile.model_id,
+        base_url=profile.base_url,
+        api_key=api_key,
+    )
+
+
+__all__ = ["get_client_for_profile", "get_client_for_profile_config"]
