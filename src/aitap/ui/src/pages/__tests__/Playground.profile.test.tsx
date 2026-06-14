@@ -183,11 +183,13 @@ describe("Playground — multi-provider profile picker (A2-P2)", () => {
     await waitFor(() => expect(select.value).toBe("prof_default"));
   });
 
-  it("falls back to legacy when the picked profile disappears from a later refetch", async () => {
+  it("disables Run when the picked profile disappears from a later refetch", async () => {
     // Regression test for the tech-review-caught race: user picks a
     // profile, it's deleted in another tab, refetch returns a list
     // that no longer contains it. The React state must reconcile to
-    // ``null`` so the wire stops sending the dangling id.
+    // ``null`` so the wire stops sending the dangling id — *and* Run
+    // must disable so the user can't accidentally submit a payload
+    // whose backend would 422.
     installRunCapture();
     let callCount = 0;
     server.use(
@@ -220,19 +222,26 @@ describe("Playground — multi-provider profile picker (A2-P2)", () => {
     const select = (await screen.findByLabelText(/use profile/i)) as HTMLSelectElement;
     await waitFor(() => expect(select.value).toBe("prof_default"));
 
+    // Switch to end-to-end so the profile gate is the only remaining
+    // gate on Run — masking it behind pipeline-selection would hide
+    // the regression.
+    await userEvent.click(screen.getByRole("button", { name: /^end-to-end$/i }));
+    expect(screen.getByRole("button", { name: /^run$/i })).toBeEnabled();
+
     // Profile goes away.
     await queryClient.invalidateQueries({ queryKey: ["profiles"] });
 
-    // Picker collapses to the empty-state (no profiles), and the
-    // React state behind the wire is back on legacy.
+    // Picker collapses to the empty-state and Run disables — the
+    // reconciliation effect must drop ``profileId`` back to ``null``.
     await screen.findByText(/Open Settings to add one/i);
+    expect(screen.getByRole("button", { name: /^run$/i })).toBeDisabled();
   });
 
   it("renders the plain-language empty state when no profiles exist", async () => {
     server.use(
       http.get("/api/profiles", () => HttpResponse.json([])),
-      // No configured default — seeding logic should leave the picker on
-      // the legacy fallback.
+      // No configured default — seeding logic should leave the picker
+      // unset (which keeps Run disabled).
       http.get("/api/settings", () =>
         HttpResponse.json({
           ...settingsFixture,

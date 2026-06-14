@@ -144,10 +144,11 @@ export function Playground() {
   const [pipelineSelection, setPipelineSelection] = useState<string[]>([]);
   const [cases, setCases] = useState<CaseDraft[]>(DEFAULT_DRAFTS);
   const [temperature, setTemperature] = useState<number>(0.2);
-  // Selected multi-provider profile id (A2-P2). ``null`` means "use the
-  // legacy provider/model dispatch" — same behaviour the page had
-  // before this PR. When set, the wire payload carries ``profile_id``
-  // and the backend routes through ``deep.factory.get_client_for_profile_config``.
+  // Selected multi-provider profile id. After contract v4 (A2-P3) the
+  // legacy provider/model fallback is gone — ``null`` keeps Run
+  // disabled and the picker on its empty-state pointer at Settings.
+  // When set, the wire payload carries ``profile_id`` and the backend
+  // routes through ``deep.factory.get_client_for_profile_config``.
   const [profileId, setProfileId] = useState<string | null>(null);
   const [profileSeeded, setProfileSeeded] = useState(false);
   const [activeRun, setActiveRun] = useState<RunDetailResponse | null>(null);
@@ -172,10 +173,11 @@ export function Playground() {
 
   // Seed profileId once both queries land. We prefer the configured
   // default (``settings.defaults.model_profile_id``) when the profile
-  // is still present; otherwise leave the picker on the legacy
-  // fallback so today's behaviour stays the default. The
-  // ``profileSeeded`` flag means a user who clicks the legacy option
-  // once doesn't get reverted to the default on the next refetch.
+  // is still present; otherwise leave the picker unset (Run stays
+  // disabled, picker shows the empty-state pointer). The
+  // ``profileSeeded`` flag means a user who manually picks a
+  // different profile once doesn't get reverted to the default on
+  // the next refetch.
   //
   // Race we care about (caught by tech review of A2-P2): the first
   // ``profilesQ.data`` arrival can land *before* it actually carries
@@ -189,7 +191,7 @@ export function Playground() {
     const defaultProfileId = settingsQ.data.defaults?.model_profile_id ?? null;
     if (!defaultProfileId) {
       // No default configured at all — nothing for a future refetch to
-      // resolve, lock in the legacy fallback.
+      // resolve, lock the picker on its current (unset) state.
       setProfileSeeded(true);
       return;
     }
@@ -204,11 +206,10 @@ export function Playground() {
 
   // Reconcile against the live profile list. If the user picked a
   // profile and a refetch later returns a list that doesn't contain
-  // it (deleted in another tab, renamed, …), drop back to the legacy
-  // fallback so the wire stays consistent with what the picker shows
-  // (browsers fall back to the empty option when ``<select value>``
-  // doesn't match, but the React state would still send the stale
-  // id). Caught by tech review of A2-P2.
+  // it (deleted in another tab, renamed, …), drop ``profileId`` back
+  // to ``null`` so the wire stops sending the dangling id and Run
+  // disables (``canRun`` gates on ``!!profileId``). Caught by tech
+  // review of A2-P2.
   useEffect(() => {
     if (!profilesQ.data || profileId === null) return;
     if (!profilesQ.data.some((p) => p.id === profileId)) {

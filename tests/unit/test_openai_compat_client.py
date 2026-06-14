@@ -191,6 +191,69 @@ async def test_chat_passes_base_url_and_api_key_to_sdk(
     assert call["max_tokens"] == 4
 
 
+async def test_chat_response_format_json_sends_json_object_kwarg(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``response_format="json"`` → SDK kwarg ``{"type": "json_object"}``.
+
+    Pinned in this file because the deleted ``test_openai_client.py``
+    test (A2-P3) used to cover it against ``OpenAIClient``. Critic +
+    judge rely on JSON mode at runtime — a rename of the SDK kwarg
+    would otherwise only get caught against a live provider.
+    """
+    fake = _install_fake_sdk(monkeypatch, _FakeCompletion("{}"))
+    client = OpenAICompatClient(
+        base_url="https://api.deepseek.com/v1",
+        model="deepseek-chat",
+        api_key="x",
+    )
+    await client.chat(
+        [ChatMessage(role="user", content="hi")],
+        response_format="json",
+    )
+    call = fake.chat.completions.calls[0]
+    assert call["response_format"] == {"type": "json_object"}
+
+
+async def test_chat_passes_optional_params(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``temperature`` / ``max_tokens`` / ``top_p`` round-trip into the
+    SDK call. Pinned here after ``test_openai_client.py`` (A2-P3)
+    deletion removed the equivalent coverage."""
+    fake = _install_fake_sdk(monkeypatch, _FakeCompletion("ok"))
+    client = OpenAICompatClient(
+        base_url="https://api.deepseek.com/v1",
+        model="deepseek-chat",
+        api_key="x",
+    )
+    await client.chat(
+        [ChatMessage(role="user", content="hi")],
+        temperature=0.7,
+        max_tokens=42,
+        top_p=0.95,
+    )
+    call = fake.chat.completions.calls[0]
+    assert call["temperature"] == 0.7
+    assert call["max_tokens"] == 42
+    assert call["top_p"] == 0.95
+
+
+async def test_chat_maps_finish_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SDK finish_reason strings map onto our ``FinishReason`` literal.
+
+    Iterate convergence detection relies on ``length`` surfacing
+    distinctly from ``stop``; pinned here after the equivalent
+    ``OpenAIClient`` test was deleted in A2-P3.
+    """
+    _install_fake_sdk(monkeypatch, _FakeCompletion("trunc", finish_reason="length"))
+    client = OpenAICompatClient(
+        base_url="https://api.deepseek.com/v1",
+        model="deepseek-chat",
+        api_key="x",
+    )
+    response = await client.chat([ChatMessage(role="user", content="hi")])
+    assert response.finish_reason == "length"
+
+
 async def test_chat_returns_text_and_usage(monkeypatch: pytest.MonkeyPatch) -> None:
     _install_fake_sdk(
         monkeypatch,

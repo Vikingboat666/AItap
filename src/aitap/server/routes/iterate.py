@@ -243,6 +243,23 @@ async def start_iterate_session(
             detail=f"prompt {payload.prompt_id!r} not found",
         )
 
+    # Profile precondition (A2-P3). The background task dispatches via
+    # ``settings.defaults.model_profile_id``; if no default is set,
+    # ``_run_iterate_in_background`` would raise
+    # ``ProfileDispatchError`` inside the task, where the bare-Exception
+    # catch maps it to a generic ``critic_failed`` sentinel — the
+    # actionable plain-language message would never reach the UI. Fail
+    # fast at the route layer with the same 422 + detail contract
+    # ``/api/runs`` uses (CLAUDE.md plain-language: cause + next action).
+    if not settings.defaults.model_profile_id:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Auto-iterate needs a default model profile. Open Settings, "
+                "pick a default profile, then re-run."
+            ),
+        )
+
     session_id = new_session_id()
     _insert_placeholder(conn, session_id=session_id, prompt_id=payload.prompt_id)
 

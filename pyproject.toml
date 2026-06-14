@@ -143,6 +143,7 @@ addopts = "-ra --strict-markers"
 markers = [
     "integration: integration tests requiring external resources",
     "slow: slow tests",
+    "no_default_profile: opt out of the iterate test suite's default-profile pin so the route-layer 422 pre-check fires",
 ]
 
 [tool.coverage.run]
