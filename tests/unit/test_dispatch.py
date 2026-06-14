@@ -617,6 +617,153 @@ def test_set_client_factory_none_restores_default() -> None:
     assert dispatch._client_factory is dispatch._default_client_factory
 
 
+# ---------------------------------------------------------------------------
+# Profile-path dispatch (A2-P1)
+# ---------------------------------------------------------------------------
+
+
+def test_invoke_run_with_profile_id_routes_through_profile_factory(
+    project: Settings,
+) -> None:
+    """Setting ``payload.profile_id`` invokes the profile-path seam.
+
+    The legacy ``_client_factory`` must not be called for this branch —
+    the seam separation is the whole point of A2-P1 (parallel paths
+    until A2-P3 removes the legacy one).
+    """
+    site = _prompt_site()
+    _seed_prompt_row(project, site)
+    run_id = "test-run-profile"
+    _seed_run_row(project, run_id, site.id)
+
+    legacy_calls: list[tuple[str, str]] = []
+    dispatch.set_client_factory(
+        lambda provider, model: (legacy_calls.append((provider, model)), MockLLMClient())[1]
+    )
+    profile_mock = MockLLMClient(model="mock-model", scripted=["profile-reply"])
+    profile_calls: list[tuple[Settings, str]] = []
+
+    def _profile_factory(settings: Settings, profile_id: str) -> MockLLMClient:
+        profile_calls.append((settings, profile_id))
+        return profile_mock
+
+    dispatch.set_profile_client_factory(_profile_factory)  # type: ignore[arg-type]
+    try:
+        payload = RunCreate(
+            target_kind="prompt",
+            target_id=site.id,
+            target_version=1,
+            cases=[DatasetCase(inputs={"value": "ping"})],
+            provider=Provider.ANTHROPIC,
+            model="legacy-ignored",
+            profile_id="my-profile",
+            parameters=CallParameters(temperature=0.0),
+        )
+        dispatch.invoke_run(settings=project, run_id=run_id, payload=payload)
+    finally:
+        dispatch.set_client_factory(None)
+        dispatch.set_profile_client_factory(None)
+
+    assert legacy_calls == []
+    assert profile_calls == [(project, "my-profile")]
+    assert len(profile_mock.calls) == 1
+
+    conn = _open_conn(project)
+    try:
+        row = runs_dao.read_run(conn, run_id)
+    finally:
+        conn.close()
+    assert row is not None
+    assert row["status"] == "done"
+
+
+def test_invoke_run_legacy_path_unchanged_when_profile_id_is_none(
+    project: Settings,
+    mock_client_factory: MockLLMClient,
+) -> None:
+    """``profile_id=None`` keeps the legacy provider/model dispatch intact.
+
+    A2-P1 is additive: every existing client that builds a RunCreate
+    without ``profile_id`` should behave byte-for-byte the way it did
+    before. The profile factory must stay untouched on this path.
+    """
+    site = _prompt_site()
+    _seed_prompt_row(project, site)
+    run_id = "test-run-legacy"
+    _seed_run_row(project, run_id, site.id)
+
+    profile_calls: list[tuple[Settings, str]] = []
+    dispatch.set_profile_client_factory(
+        lambda settings, profile_id: (
+            profile_calls.append((settings, profile_id)),
+            MockLLMClient(),
+        )[1]
+    )
+    try:
+        payload = _build_payload(
+            target_id=site.id,
+            cases=[DatasetCase(inputs={"value": "legacy"})],
+        )
+        assert payload.profile_id is None
+        dispatch.invoke_run(settings=project, run_id=run_id, payload=payload)
+    finally:
+        dispatch.set_profile_client_factory(None)
+
+    assert profile_calls == []
+    assert len(mock_client_factory.calls) == 1
+
+
+def test_invoke_run_unknown_profile_marks_failed(project: Settings) -> None:
+    """An unknown profile id flips the run to ``failed`` with a clear message.
+
+    Uses the default factory (no test seam) so we cover the real
+    ``load_profiles_from_yaml`` lookup path: no ``profiles.yaml`` exists
+    under ``tmp_path``, so the lookup returns an empty list and the
+    factory raises a plain-language ``ValueError`` naming the next
+    action.
+    """
+    site = _prompt_site()
+    _seed_prompt_row(project, site)
+    run_id = "test-run-bad-profile"
+    _seed_run_row(project, run_id, site.id)
+
+    payload = RunCreate(
+        target_kind="prompt",
+        target_id=site.id,
+        target_version=1,
+        cases=[],
+        provider=Provider.ANTHROPIC,
+        model="legacy-ignored",
+        profile_id="not-configured",
+        parameters=CallParameters(temperature=0.0),
+    )
+    with pytest.raises(ValueError, match="No profile with id 'not-configured'"):
+        dispatch.invoke_run(settings=project, run_id=run_id, payload=payload)
+
+    conn = _open_conn(project)
+    try:
+        row = runs_dao.read_run(conn, run_id)
+    finally:
+        conn.close()
+    assert row is not None
+    assert row["status"] == "failed"
+
+
+def test_set_profile_client_factory_none_restores_default() -> None:
+    """Symmetry with ``set_client_factory(None)`` — restores the production seam."""
+    sentinel = object()
+    dispatch.set_profile_client_factory(
+        lambda settings, profile_id: sentinel  # type: ignore[return-value]
+    )
+    # The sentinel surfaces unchanged through the seam.
+    from aitap.config import Settings as _Settings
+
+    fake = _Settings(project_root=Path("."))
+    assert dispatch._profile_client_factory(fake, "x") is sentinel
+    dispatch.set_profile_client_factory(None)
+    assert dispatch._profile_client_factory is dispatch._default_profile_client_factory
+
+
 def test_outputs_sidecar_path_layout(tmp_path: Path) -> None:
     """The sidecar layout is the contract M4 will write outputs into."""
     settings = Settings(project_root=tmp_path)

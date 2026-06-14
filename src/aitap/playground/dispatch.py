@@ -84,6 +84,11 @@ _LOGGER = logging.getLogger(__name__)
 # wiring is a straight pass-through and tests can substitute a callable
 # that returns a MockLLMClient without monkey-patching the deep package.
 ClientFactory = Callable[[str, str], "LLMClient"]
+# Signature for the multi-provider profile path. Receives the request's
+# Settings (for ``profiles.yaml`` resolution) and the requested profile
+# id; returns a built LLMClient. Kept parallel to ``ClientFactory`` so
+# each dispatch branch has its own test seam.
+ProfileClientFactory = Callable[["Settings", str], "LLMClient"]
 
 
 def _default_client_factory(provider: str, model: str) -> LLMClient:
@@ -106,10 +111,55 @@ def _default_client_factory(provider: str, model: str) -> LLMClient:
     return client_module.get_client(provider, model, api_key=api_key)
 
 
+def _default_profile_client_factory(settings: Settings, profile_id: str) -> LLMClient:
+    """Default profile-path factory: resolve the profile + key + build a client.
+
+    Mirrors the scanner's ``_build_profile_client`` shape — the profile
+    config is loaded from ``profiles.yaml`` (rather than reading the
+    in-process route cache) so the dispatch adapter stays decoupled from
+    the routes layer and works in both HTTP and direct-import contexts.
+    Trade-off: if ``save_profiles_to_yaml`` failed during a Settings
+    write (read-only ``.aitap/`` etc.), the in-process ``_PROFILES``
+    cache becomes the source of truth for that session and this
+    function will report the profile as unknown. The
+    ``test_post_run_with_unknown_profile_id_marks_failed_and_records_profile_id``
+    integration test locks down today's behaviour; revisit if real
+    users hit the yaml-save-failed path.
+
+    Raises:
+        ValueError: with a plain-language message when the profile id
+            is unknown or has no key. As shipped in A2-P1 the route
+            handler returns a generic 500 and the run row carries the
+            ``failed`` status; the actionable message lands in server
+            logs and is asserted by tests. A2-P2 catches this exception
+            in the route layer and translates it to an
+            ``HTTPException(detail=...)`` so the UI sees the actionable
+            string verbatim.
+    """
+    from aitap.config_io import load_profiles_from_yaml
+    from aitap.deep.factory import get_client_for_profile_config
+
+    profiles, _ = load_profiles_from_yaml(settings)
+    profile = next((entry for entry in profiles if entry.id == profile_id), None)
+    if profile is None:
+        raise ValueError(
+            f"No profile with id {profile_id!r}. Open Settings to add it, then re-run."
+        )
+    api_key = _secrets.get_key_for_profile(profile_id)
+    if not api_key:
+        raise ValueError(
+            f"Profile {profile_id!r} has no API key set. Open Settings "
+            "and click Test next to it (or set the key under "
+            f"profile:{profile_id} in ~/.aitap/secrets.yaml), then re-run."
+        )
+    return get_client_for_profile_config(profile, api_key)
+
+
 # Mutable on purpose: the tests' set_client_factory swap. Kept lower-case so
 # the constant-redefinition rule doesn't flag us; the docstring on the setter
 # is the source of truth for "treat this as private state, not a constant."
 _client_factory: ClientFactory = _default_client_factory
+_profile_client_factory: ProfileClientFactory = _default_profile_client_factory
 
 
 def set_client_factory(factory: ClientFactory | None) -> None:
@@ -121,6 +171,19 @@ def set_client_factory(factory: ClientFactory | None) -> None:
     """
     global _client_factory
     _client_factory = factory if factory is not None else _default_client_factory
+
+
+def set_profile_client_factory(factory: ProfileClientFactory | None) -> None:
+    """Install (or reset) the *profile-path* LLMClient factory.
+
+    Parallel to :func:`set_client_factory` — the profile branch of
+    :func:`_dispatch` runs through this seam when
+    ``payload.profile_id`` is set, so a test can inject a MockLLMClient
+    without seeding ``profiles.yaml`` or the secrets vault. Passing
+    ``None`` restores the production default.
+    """
+    global _profile_client_factory
+    _profile_client_factory = factory if factory is not None else _default_profile_client_factory
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +275,16 @@ def _dispatch(
     roll-up.
     """
     cases = _resolve_cases(settings, payload)
-    client = _client_factory(payload.provider.value, payload.model)
+    # Multi-provider profile dispatch (A2-P1). When the payload carries a
+    # ``profile_id`` we route through the profile-path factory; otherwise
+    # we keep the legacy provider/model dispatch byte-for-byte so existing
+    # clients (Playground UI pre-A2-P2, deep scanner-side callers, every
+    # unit test that builds a RunCreate the old way) keep their current
+    # behaviour. A2-P3 removes the else-branch when the contract bumps.
+    if payload.profile_id is not None:
+        client = _profile_client_factory(settings, payload.profile_id)
+    else:
+        client = _client_factory(payload.provider.value, payload.model)
 
     if payload.target_kind == "prompt":
         site = _load_prompt_site(conn, payload.target_id)
@@ -375,9 +447,11 @@ def _row_payload(row: sqlite3.Row) -> str:
 
 __all__ = [
     "ClientFactory",
+    "ProfileClientFactory",
     "invoke_run",
     "outputs_sidecar_path",
     "set_client_factory",
+    "set_profile_client_factory",
     "write_outputs_sidecar",
 ]
 

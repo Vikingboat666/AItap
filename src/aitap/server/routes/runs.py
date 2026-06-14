@@ -88,6 +88,7 @@ def create_run(
         dataset_id=payload.dataset_id,
         provider=payload.provider.value,
         model=payload.model,
+        profile_id=payload.profile_id,
         parameters_json=parameters_json,
     )
 

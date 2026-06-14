@@ -283,6 +283,108 @@ async def test_post_run_persists_row_and_returns_run_id(
         conn.close()
 
 
+async def test_post_run_with_profile_id_routes_through_profile_factory(
+    client: AsyncClient,
+    settings: Settings,
+) -> None:
+    """``profile_id`` on the payload dispatches via the profile-path seam.
+
+    A2-P1 wires the profile branch into ``invoke_run`` without removing
+    the legacy ``provider`` / ``model`` fields yet. This test installs a
+    profile-path factory that returns a scripted MockLLMClient and
+    asserts:
+
+    1. The run row records the ``profile_id`` (schema v3 column).
+    2. The chat happened against the profile mock — *not* the legacy
+       mock the autouse fixture installs. The legacy ``provider`` /
+       ``model`` fields ride along but are ignored on this branch.
+    3. The per-case output text comes from the profile mock's scripted
+       reply, proving the dispatch routed through the new branch.
+    """
+    profile_mock = MockLLMClient(model="profile-mock", scripted=["from-profile"])
+    legacy_calls: list[tuple[str, str]] = []
+    playground_dispatch.set_client_factory(
+        lambda provider, model: (
+            legacy_calls.append((provider, model)),
+            MockLLMClient(model=model),
+        )[1]
+    )
+    playground_dispatch.set_profile_client_factory(lambda settings, profile_id: profile_mock)
+    try:
+        payload = _run_payload()
+        payload["profile_id"] = "ds-default"
+        payload["cases"] = [{"inputs": {"x": "ping"}}]
+
+        resp = await client.post("/api/runs", json=payload)
+        assert resp.status_code == 202, resp.text
+        body = resp.json()
+        assert body["status"] == "done"
+        run_id = body["run_id"]
+
+        detail = await client.get(f"/api/runs/{run_id}")
+        assert detail.status_code == 200
+        outputs = detail.json()["outputs"]
+        assert len(outputs) == 1
+        assert outputs[0]["text"] == "from-profile"
+
+        conn = _open_conn(settings)
+        try:
+            cur = conn.execute("SELECT profile_id FROM runs WHERE id = ?", (run_id,))
+            row = cur.fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        assert row["profile_id"] == "ds-default"
+
+        assert legacy_calls == []
+        assert len(profile_mock.calls) == 1
+    finally:
+        playground_dispatch.set_client_factory(None)
+        playground_dispatch.set_profile_client_factory(None)
+
+
+async def test_post_run_with_unknown_profile_id_marks_failed_and_records_profile_id(
+    client: AsyncClient,
+    settings: Settings,
+) -> None:
+    """An unknown profile id fails the run *and* persists ``profile_id``.
+
+    Locks down the A2-P1 failure contract so A2-P2 (which will surface
+    the plain-language ``ValueError`` message as a 422 HTTPException
+    detail in the route layer) has an unambiguous baseline to refer
+    back to: today the dispatch adapter re-raises the unknown-profile
+    ``ValueError`` and the route layer's exception handler returns 500
+    (httpx's ``ASGITransport`` propagates the exception in-process so
+    we ``pytest.raises`` it). The run row carries ``failed`` status,
+    and ``profile_id`` lands in the row so a future failure-detail
+    endpoint can name the offending profile in the UI.
+
+    No tmp ``profiles.yaml`` is seeded — the default
+    ``_default_profile_client_factory`` resolves an empty profile list
+    and raises ``ValueError`` with the plain-language unknown-id
+    message. We leave the autouse legacy factory in place (the failure
+    happens in the profile path before either factory's mock client is
+    constructed).
+    """
+    payload = _run_payload()
+    payload["profile_id"] = "not-configured"
+
+    with pytest.raises(ValueError, match="No profile with id 'not-configured'"):
+        await client.post("/api/runs", json=payload)
+
+    conn = _open_conn(settings)
+    try:
+        cur = conn.execute(
+            "SELECT id, status, profile_id FROM runs ORDER BY started_at DESC LIMIT 1"
+        )
+        row = cur.fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    assert row["status"] == "failed"
+    assert row["profile_id"] == "not-configured"
+
+
 async def test_list_runs_filters_by_target(client: AsyncClient) -> None:
     await client.post("/api/runs", json=_run_payload("prompt-aaa", 1))
     await client.post("/api/runs", json=_run_payload("prompt-bbb", 1))
