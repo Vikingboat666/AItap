@@ -15,6 +15,7 @@ import ast
 import hashlib
 import re
 from collections import defaultdict
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
@@ -64,6 +65,62 @@ def index_sites_by_line(sites: list[PromptSite]) -> dict[int, PromptSite]:
     for site in sites:
         out.setdefault(site.location.line_start, site)
     return out
+
+
+def dedupe_keep_order(items: Iterable[str]) -> list[str]:
+    """Return *items* with duplicates removed, preserving first-seen order.
+
+    Set-based semantics — ``["a","b","a","c","b"]`` → ``["a","b","c"]``.
+    Used by detectors that want to chain edges between consecutive
+    distinct receivers / methods (a re-entrant "classify, generate,
+    classify again to refine, validate" becomes classify → generate →
+    validate, not a four-step chain with a duplicate node).
+
+    Shared between :class:`~aitap.scanner.dataflow.cross_file_orchestration.CrossFileOrchestration`
+    and :class:`~aitap.scanner.dataflow.intra_class_method_chain.IntraClassMethodChain`
+    so the two rules don't drift.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
+
+
+def iter_method_calls_excluding_nested_defs(
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> Iterator[ast.Call]:
+    """Yield every ``ast.Call`` directly under *method*'s body, **not
+    descending into nested function / class / lambda bodies**.
+
+    The plain ``ast.walk(method)`` would yield calls inside any
+    closure-style helper (``async def _retry():`` wrapping the LLM
+    call), an inline comprehension's ``lambda``, or a nested class —
+    none of which actually execute when the outer method is invoked
+    in a way that should anchor it as an LLM-bearing leaf. Without
+    this gate, an orchestrator method that defines a helper closure
+    with an LLM call inside picks up the helper's site as its own
+    "first PromptSite" and gets misclassified as a leaf.
+
+    The block-statement traversal still descends into ``if`` /
+    ``for`` / ``while`` / ``try`` / ``with`` / ``async with`` bodies
+    so a chain that spans control flow still surfaces.
+    """
+    stop_at = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+    # iter_child_nodes-based DFS so we can prune children we don't want
+    # to descend into.
+    stack: list[ast.AST] = list(ast.iter_child_nodes(method))
+    while stack:
+        node = stack.pop()
+        if isinstance(node, ast.Call):
+            yield node
+        if isinstance(node, stop_at):
+            continue
+        # ast.iter_child_nodes yields direct children (statements,
+        # expressions); pushing them onto the stack continues the DFS.
+        stack.extend(ast.iter_child_nodes(node))
 
 
 def call_at_or_within(node: ast.AST, line_index: dict[int, PromptSite]) -> PromptSite | None:

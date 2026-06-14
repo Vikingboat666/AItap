@@ -32,7 +32,7 @@ from textwrap import dedent
 import pytest
 
 from aitap.scanner.dataflow import IntraClassMethodChain
-from aitap.scanner.dataflow.intra_class_method_chain import _dedupe_keep_order
+from aitap.scanner.dataflow.base import dedupe_keep_order
 from aitap.scanner.engine import scan_project
 from aitap.scanner.models import Confidence, EdgeKind
 
@@ -62,7 +62,10 @@ def _pipeline_via(result, expected_substring: str) -> bool:
 
 
 def test_dedupe_keep_order_preserves_first_seen() -> None:
-    assert _dedupe_keep_order(["a", "b", "a", "c", "b"]) == ["a", "b", "c"]
+    """The shared helper (moved to ``dataflow.base`` in B1) keeps
+    first-seen order across non-adjacent repeats — same semantics the
+    cross-file rule uses, so the two detectors don't drift."""
+    assert dedupe_keep_order(["a", "b", "a", "c", "b"]) == ["a", "b", "c"]
 
 
 def test_dedupe_keep_order_collapses_adjacent_repeats() -> None:
@@ -71,11 +74,11 @@ def test_dedupe_keep_order_collapses_adjacent_repeats() -> None:
     # inner ``ast.walk`` adds it again. The helper must keep the
     # de-duped, ordered shape so edge chaining works the same way the
     # cross-file rule produces it.
-    assert _dedupe_keep_order(["a", "a", "a", "b"]) == ["a", "b"]
+    assert dedupe_keep_order(["a", "a", "a", "b"]) == ["a", "b"]
 
 
 def test_dedupe_keep_order_handles_empty_input() -> None:
-    assert _dedupe_keep_order([]) == []
+    assert dedupe_keep_order([]) == []
 
 
 # --------------------------------------------------------------------------- #
@@ -344,9 +347,130 @@ def test_intra_class_method_chain_ignores_cross_attribute_calls(
 # --------------------------------------------------------------------------- #
 
 
-def test_detector_returns_empty_when_fewer_than_three_sites() -> None:
-    """The per-file ≥3 site gate in ``detect`` is a fast-path that the
-    orchestrator's own ≥2 gate doesn't cover."""
+def test_detector_returns_empty_for_class_only_module() -> None:
+    """An empty input case — no sites, no edges. Pins the detector's
+    ``detect`` shape for callers that pass a parsed tree directly
+    without going through the per-file orchestrator gate.
+    """
     detector = IntraClassMethodChain()
     tree = ast.parse("class X: pass")
     assert detector.detect(tree, [], Path("x.py")) == []
+
+
+# --------------------------------------------------------------------------- #
+# Tech-review regressions (PR #73)                                            #
+# --------------------------------------------------------------------------- #
+
+
+def test_orchestrator_with_nested_def_helper_still_emits_pipeline(
+    project_root: Path,
+) -> None:
+    """Regression: a nested ``async def`` (or ``def``) closure inside the
+    orchestrator method, whose body contains its own LLM call, must
+    NOT steal the anchor and misclassify the outer method as a leaf.
+
+    Pre-fix the detector's ``_first_site_in_method`` did
+    ``ast.walk(method)`` which descended into the closure's body,
+    found the closure's PromptSite, and put the outer method in
+    ``method_to_site``. The orchestrator-vs-leaf gate then skipped
+    the outer method, silently dropping the pipeline. Common in
+    retry-wrapper / throttle-decorator idioms.
+    """
+    _write(
+        project_root,
+        "app/with_closure.py",
+        """
+        class Engine:
+            def __init__(self):
+                self._llm = object()
+
+            async def step_a(self):
+                return await self._llm.complete(
+                    messages=[{"role": "user", "content": "A."}],
+                )
+
+            async def step_b(self):
+                return await self._llm.complete(
+                    messages=[{"role": "user", "content": "B."}],
+                )
+
+            async def step_c(self):
+                return await self._llm.complete(
+                    messages=[{"role": "user", "content": "C."}],
+                )
+
+            async def orchestrate(self, msg):
+                async def _retry():
+                    # Hidden LLM call inside a closure — must NOT
+                    # bleed into the outer method's anchor.
+                    return await self._llm.complete(
+                        messages=[{"role": "user", "content": "H."}],
+                    )
+
+                await self.step_a()
+                await self.step_b()
+                await self.step_c()
+        """,
+    )
+    result = _scan(project_root)
+    # The closure's call surfaces as a site (4 total: 3 leaves + 1
+    # closure body).
+    assert len(result.prompts) == 4
+    # But the orchestrator still produces a pipeline anchored to the
+    # three sibling methods.
+    assert _pipeline_via(result, "Engine.orchestrate")
+
+
+def test_branching_orchestrator_downgrades_confidence_to_low(
+    project_root: Path,
+) -> None:
+    """A method body with ``if`` / ``else`` arms collapses by first-seen
+    name (``dedupe_keep_order`` is set-based), so the else-branch is
+    effectively invisible in the emitted chain. The detector must
+    flag this lossy case by downgrading edge confidence to LOW —
+    straight-line bodies keep MEDIUM.
+    """
+    _write(
+        project_root,
+        "app/branchy.py",
+        """
+        class Branchy:
+            def __init__(self):
+                self._llm = object()
+
+            async def step_a(self):
+                return await self._llm.complete(
+                    messages=[{"role": "user", "content": "A."}],
+                )
+
+            async def step_b(self):
+                return await self._llm.complete(
+                    messages=[{"role": "user", "content": "B."}],
+                )
+
+            async def step_c(self):
+                return await self._llm.complete(
+                    messages=[{"role": "user", "content": "C."}],
+                )
+
+            async def orchestrate(self, flag):
+                if flag:
+                    await self.step_a()
+                    await self.step_b()
+                    await self.step_c()
+                else:
+                    await self.step_c()
+                    await self.step_b()
+                    await self.step_a()
+        """,
+    )
+    result = _scan(project_root)
+    assert _pipeline_via(result, "Branchy.orchestrate")
+    pipeline = next(
+        p
+        for p in result.pipelines
+        if any(edge.via and "Branchy.orchestrate" in edge.via for edge in p.edges)
+    )
+    # Every edge from a branching orchestrator carries LOW confidence
+    # so the UI can show the chain as "likely partial".
+    assert all(edge.confidence is Confidence.LOW for edge in pipeline.edges)

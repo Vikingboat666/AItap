@@ -77,6 +77,8 @@ from aitap.scanner.models import (
     PromptSite,
 )
 
+from .base import dedupe_keep_order as _dedupe_keep_order
+
 
 @dataclass(frozen=True)
 class _CrossFileContext:
@@ -454,17 +456,14 @@ class CrossFileOrchestration:
 # ---------------------------------------------------------------------------
 
 
-def _dedupe_keep_order(items: Iterable[str]) -> list[str]:
-    """Return *items* with duplicates removed, preserving first-seen
-    order. ``["a", "b", "a", "c", "b"]`` → ``["a", "b", "c"]``.
-    """
-    seen: set[str] = set()
-    out: list[str] = []
-    for item in items:
-        if item not in seen:
-            seen.add(item)
-            out.append(item)
-    return out
+# ``_dedupe_keep_order`` moved to :mod:`aitap.scanner.dataflow.base`
+# (B1, wt/scanner-pipelines) and is now shared with
+# :class:`~aitap.scanner.dataflow.intra_class_method_chain.IntraClassMethodChain`
+# so the two detectors can't drift on collapse semantics. The import
+# above re-exports it under the legacy ``_dedupe_keep_order`` name so
+# the existing tests in
+# ``tests/unit/test_dataflow_cross_file_orchestration.py`` keep
+# importing it from this module unchanged.
 
 
 def _relative(file_path: Path, project_root: Path) -> str:

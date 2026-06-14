@@ -48,15 +48,24 @@ We deliberately *don't* handle:
 - ``self.method`` reached via attribute chains
   (``self.helper.method()`` — that's cross_file_orchestration's case
   once the receiver is class-attribute-assigned).
-- Conditional branches — every call we see in source order is treated
-  as part of the chain. A method body with two parallel ``if`` arms
-  each making three LLM calls produces six steps, not two chains; the
-  rule lacks the symbolic execution that would untangle them.
+- Nested function / class definitions inside an orchestrator method —
+  we explicitly *don't* descend into their bodies when anchoring a
+  method's PromptSite or collecting its sub-method calls (see
+  :func:`~aitap.scanner.dataflow.base.iter_method_calls_excluding_nested_defs`).
+  Without that gate a closure-style retry wrapper inside the
+  orchestrator would steal the anchor and misclassify the outer
+  method as a leaf, silently dropping the pipeline.
 
-Confidence: :attr:`Confidence.MEDIUM`. The signal is strong (method
-calls on ``self`` resolved against locally-defined LLM-bearing methods)
-but the chain semantics rely on source-order traversal, which is a
-heuristic when control flow branches.
+Conditional branches we *do* see — but with a confidence downgrade.
+:func:`~aitap.scanner.dataflow.base.dedupe_keep_order` collapses by
+first-seen name, so a method body with parallel ``if`` arms each
+making three LLM calls produces *one* chain reflecting the first
+branch's call order, not two parallel chains and not six steps. The
+``else`` branch is effectively invisible. When the orchestrator's
+body contains any ``if`` / ``ast.IfExp`` / ``ast.Match``, we drop
+confidence to :attr:`Confidence.LOW` so the UI can show the chain as
+"likely partial" instead of presenting it as the full execution
+order. Straight-line bodies (no branching) keep MEDIUM.
 """
 
 from __future__ import annotations
@@ -67,7 +76,11 @@ from pathlib import Path
 
 from aitap.scanner.models import Confidence, EdgeKind, PipelineEdge, PromptSite
 
-from .base import index_sites_by_line
+from .base import (
+    dedupe_keep_order,
+    index_sites_by_line,
+    iter_method_calls_excluding_nested_defs,
+)
 
 
 class IntraClassMethodChain:
@@ -76,18 +89,21 @@ class IntraClassMethodChain:
     Pluggable in :func:`aitap.scanner.dataflow.default_detectors` —
     runs per-file alongside the other intra-file detectors. The
     orchestrator's per-file ≥2-site gate already filters away files
-    that can't possibly chain anything, so we don't re-check it here.
+    that can't possibly chain anything; the *actual* threshold lives
+    on the per-class check below (≥3 distinct LLM-bearing methods).
     """
 
     name = "intra_class_method_chain"
 
     # Minimum number of distinct LLM-bearing ``self.<method>(...)`` calls
-    # an orchestrator method must sequence before we emit edges. Three
-    # is the floor at which the "multi-turn engine" pattern becomes
-    # visually distinct from a two-step helper chain
+    # a class must offer + an orchestrator method must sequence before
+    # we emit edges. Three is the floor at which the "multi-turn engine"
+    # pattern becomes visually distinct from a two-step helper chain
     # (which :class:`IntraFileChain` + :class:`VariableTracker` already
-    # cover via free-function callees).
-    MIN_DISTINCT_STEPS = 3
+    # cover via free-function callees). The gate is *per class*,
+    # checked both on the LLM-bearing-method count and on the
+    # distinct-step count inside each orchestrator method.
+    MIN_DISTINCT_LEAVES_PER_CLASS = 3
 
     def detect(
         self,
@@ -96,9 +112,6 @@ class IntraClassMethodChain:
         file_path: Path,
     ) -> list[PipelineEdge]:
         del file_path  # not needed — site ids already encode the location.
-        if len(sites_in_file) < self.MIN_DISTINCT_STEPS:
-            return []
-
         line_index = index_sites_by_line(sites_in_file)
         edges: list[PipelineEdge] = []
 
@@ -106,7 +119,7 @@ class IntraClassMethodChain:
             if not isinstance(class_node, ast.ClassDef):
                 continue
             method_to_site = _llm_bearing_methods(class_node, line_index)
-            if len(method_to_site) < self.MIN_DISTINCT_STEPS:
+            if len(method_to_site) < self.MIN_DISTINCT_LEAVES_PER_CLASS:
                 continue
             for method in _class_methods(class_node):
                 if method.name in method_to_site:
@@ -115,14 +128,19 @@ class IntraClassMethodChain:
                     # a step in the chain it leads. Skip.
                     continue
                 steps = _collect_self_method_steps(method, method_to_site)
-                distinct_steps = _dedupe_keep_order(steps)
-                if len(distinct_steps) < self.MIN_DISTINCT_STEPS:
+                distinct_steps = dedupe_keep_order(steps)
+                if len(distinct_steps) < self.MIN_DISTINCT_LEAVES_PER_CLASS:
                     continue
+                # Downgrade confidence when the orchestrator body has
+                # branching — ``dedupe_keep_order`` will silently make
+                # the else-branch invisible.
+                confidence = Confidence.LOW if _has_branching(method) else Confidence.MEDIUM
                 edges.extend(
                     _emit_edges_between_steps(
                         distinct_steps,
                         method_to_site=method_to_site,
                         orchestrator_label=f"{class_node.name}.{method.name}",
+                        confidence=confidence,
                     )
                 )
         return edges
@@ -168,10 +186,19 @@ def _first_site_in_method(
     method: ast.FunctionDef | ast.AsyncFunctionDef,
     line_index: dict[int, PromptSite],
 ) -> PromptSite | None:
-    """Walk *method* in AST order; return the first known PromptSite Call."""
-    for node in ast.walk(method):
-        if not isinstance(node, ast.Call):
-            continue
+    """Return the first known PromptSite Call directly inside *method*.
+
+    Uses :func:`~aitap.scanner.dataflow.base.iter_method_calls_excluding_nested_defs`
+    to avoid descending into nested ``def`` / ``class`` / ``lambda``
+    bodies — without that gate a closure-style retry wrapper inside
+    the orchestrator method would steal the anchor and misclassify
+    the outer method as a leaf. Anchor convention: first-Call in
+    AST-walk order; matches what other detectors do, so cross-rule
+    edges deduplicate correctly. For straight-line bodies this is
+    source order; inside ``try`` / ``with`` / ``if`` the order is
+    AST-implementation-defined.
+    """
+    for node in iter_method_calls_excluding_nested_defs(method):
         lineno = getattr(node, "lineno", None)
         if lineno is None:
             continue
@@ -185,18 +212,20 @@ def _collect_self_method_steps(
     method: ast.FunctionDef | ast.AsyncFunctionDef,
     method_to_site: dict[str, str],
 ) -> list[str]:
-    """Return method names called via ``self.<name>(...)`` inside *method*,
-    in source order, restricted to LLM-bearing methods.
+    """Return method names called via ``self.<name>(...)`` directly inside
+    *method*, in AST-walk order, restricted to LLM-bearing methods.
 
-    We descend the whole AST (including ``async with``, ``for``, ``try``
-    bodies) so a chain that spans control-flow blocks still surfaces.
-    The caller dedupes adjacent repeats — same convention the cross-file
-    orchestration rule uses.
+    Uses :func:`~aitap.scanner.dataflow.base.iter_method_calls_excluding_nested_defs`
+    so we descend into ``if`` / ``for`` / ``try`` / ``with`` /
+    ``async with`` bodies (a chain that spans control-flow blocks
+    still surfaces) but stop at nested function / class / lambda
+    definitions (a closure's internal LLM call doesn't pollute the
+    outer method's chain). The caller dedupes via
+    :func:`~aitap.scanner.dataflow.base.dedupe_keep_order` — same
+    convention the cross-file orchestration rule uses.
     """
     steps: list[str] = []
-    for node in ast.walk(method):
-        if not isinstance(node, ast.Call):
-            continue
+    for node in iter_method_calls_excluding_nested_defs(method):
         method_name = _self_dot_method_receiver(node)
         if method_name is None:
             continue
@@ -204,6 +233,33 @@ def _collect_self_method_steps(
             continue
         steps.append(method_name)
     return steps
+
+
+def _has_branching(method: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """True when *method* contains ``if`` / ``IfExp`` / ``Match`` directly.
+
+    The dedupe-by-first-name semantics in
+    :func:`~aitap.scanner.dataflow.base.dedupe_keep_order` make the
+    ``else`` branch invisible — a method with parallel arms each
+    calling three LLM methods collapses to a single first-arm chain.
+    The result is plausibly wrong, not catastrophically wrong, so we
+    keep emitting the chain but drop confidence to LOW so the UI can
+    surface it as "likely partial". Mirrors the
+    ``iter_method_calls_excluding_nested_defs`` walk discipline so a
+    nested ``def`` containing an ``if`` doesn't leak into the
+    parent's branching judgment.
+    """
+    branching_nodes = (ast.If, ast.IfExp, ast.Match)
+    stop_at = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+    stack: list[ast.AST] = list(ast.iter_child_nodes(method))
+    while stack:
+        node = stack.pop()
+        if isinstance(node, branching_nodes):
+            return True
+        if isinstance(node, stop_at):
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+    return False
 
 
 def _self_dot_method_receiver(call: ast.Call) -> str | None:
@@ -225,36 +281,21 @@ def _self_dot_method_receiver(call: ast.Call) -> str | None:
     return func.attr
 
 
-def _dedupe_keep_order(steps: list[str]) -> list[str]:
-    """Return *steps* with duplicates removed, preserving first-seen order.
-
-    Matches ``cross_file_orchestration._dedupe_keep_order``'s
-    set-based semantics so ``["a", "b", "a", "c", "b"]`` collapses to
-    ``["a", "b", "c"]`` — a re-entrant call ("classify, generate,
-    classify again to refine, validate") is treated as one node per
-    distinct method, chained in first-seen order.
-    """
-    seen: set[str] = set()
-    out: list[str] = []
-    for name in steps:
-        if name not in seen:
-            seen.add(name)
-            out.append(name)
-    return out
-
-
 def _emit_edges_between_steps(
     distinct_steps: list[str],
     *,
     method_to_site: dict[str, str],
     orchestrator_label: str,
+    confidence: Confidence,
 ) -> list[PipelineEdge]:
     """Chain edges between consecutive distinct steps.
 
     Each step resolves to its method's anchor PromptSite; we emit
     ``EdgeKind.FUNCTION`` edges with the orchestrator's qualified name
     on the ``via`` field so the UI can explain where the link came
-    from (mirroring the cross-file rule's ``via`` shape).
+    from (mirroring the cross-file rule's ``via`` shape). Confidence
+    is supplied by the caller — MEDIUM for straight-line bodies, LOW
+    when the orchestrator branches (see ``_has_branching``).
     """
     edges: list[PipelineEdge] = []
     for src_name, tgt_name in pairwise(distinct_steps):
@@ -273,7 +314,7 @@ def _emit_edges_between_steps(
                 target=tgt_id,
                 kind=EdgeKind.FUNCTION,
                 via=orchestrator_label,
-                confidence=Confidence.MEDIUM,
+                confidence=confidence,
             )
         )
     return edges
