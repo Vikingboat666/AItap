@@ -162,7 +162,7 @@ def upgrade_builder_message_lists(
             updated.append(site)
             continue
 
-        upgraded = _upgrade_builder_message_list(func, tree)
+        upgraded = _upgrade_builder_message_list(func, tree, site.messages)
         if upgraded is None:
             updated.append(site)
             continue
@@ -249,12 +249,28 @@ def link_wrapper_sites_to_builders(
 
 
 def _is_builder_upgrade_candidate(site: PromptSite) -> bool:
-    """Only attempt upgrade on builder-function sites whose messages are
-    entirely UNRESOLVED. Builders already resolved (even partially) are
-    treated as authoritative — the L1 extractor saw enough."""
+    """Attempt upgrade on any builder-function site with at least one
+    UNRESOLVED message.
+
+    Previously the gate was ``_all_unresolved`` — pass 1 only ran when
+    L1 hit a complete miss. That left partial builders untouched, even
+    though L1 had already resolved the literal half. The cc-project
+    `build_importance_scoring_messages` case surfaced this: the system
+    message was a literal string (resolves at L1), but the user
+    message's ``content=user_content`` Name reference fell through to
+    UNRESOLVED. The whole site stayed at 1/2 because pass 1's
+    all-or-nothing gate skipped it.
+
+    The new gate runs whenever **any** message is UNRESOLVED. The
+    upgrader iterates pairwise with the return-list AST items, keeps
+    L1-resolved messages byte-for-byte, and only attempts to resolve
+    the unresolved positions. Pure addition: a builder that L1
+    already fully resolved still hits the early ``not any unresolved``
+    check and gets skipped.
+    """
     if "builder-function" not in site.tags:
         return False
-    return _all_unresolved(site.messages)
+    return any(m.template_kind is TemplateKind.UNRESOLVED for m in site.messages)
 
 
 def _find_function_def_by_name(
@@ -276,37 +292,93 @@ def _find_function_def_by_name(
 def _upgrade_builder_message_list(
     func: ast.FunctionDef | ast.AsyncFunctionDef,
     module: ast.Module,
+    existing: list[Message],
 ) -> list[Message] | None:
-    """Try to resolve *func*'s return statement with local-var + helper-call
-    + module-constant resolution. Returns the upgraded list, or ``None``
-    when nothing improved.
+    """Try to upgrade UNRESOLVED slots in *existing* by walking *func*'s
+    return statement with local-var + helper-call + module-constant
+    resolution.
+
+    Returns a new message list with L1-resolved entries preserved
+    byte-for-byte and post-pass-resolved entries swapped in, or
+    ``None`` when the pass didn't actually flip any UNRESOLVED entry
+    to a resolved one (caller treats ``None`` as "no change, keep the
+    site as-is").
+
+    The pairwise iteration over *existing* and ``return_node.value.elts``
+    assumes the L1 extractor produces one :class:`Message` per source
+    list element — which it does (see
+    :func:`aitap.scanner.rules.prompt_extractor.extract_messages`). If
+    the lengths disagree (a future scanner change that collapses or
+    expands messages), we bail to ``None`` rather than risk an
+    off-by-one slot misalignment between the L1 read and the
+    post-pass write.
     """
     return_node = _find_first_return(func)
     if return_node is None or not isinstance(return_node.value, ast.List):
         return None
 
+    elts = return_node.value.elts
     locals_map = _collect_local_assignments(func)
     module_consts = _collect_module_assignments(module)
     module_funcs = _collect_module_functions(module)
 
-    out: list[Message] = []
-    any_resolved = False
-    for item in return_node.value.elts:
-        msg = _resolve_list_item_to_message(item, locals_map, module_consts, module_funcs)
-        if msg is None:
-            out.append(
-                Message(
-                    role=Role.USER,
-                    template_text="",
-                    template_kind=TemplateKind.UNRESOLVED,
-                )
-            )
-            continue
-        if msg.template_kind is not TemplateKind.UNRESOLVED:
-            any_resolved = True
-        out.append(msg)
+    # Two-mode handling of the length-mismatch case.
+    #
+    # When *every* L1 message is UNRESOLVED, L1's ``_messages_from_function_body``
+    # sometimes collapses the whole list down to a single UNRESOLVED
+    # fallback (it bails to the "emit one placeholder so the
+    # definition shows up" path). In that case there is nothing to
+    # preserve from L1, and we can safely rebuild a fresh list aligned
+    # with the AST ``return [...]`` elements — that is what pass 1
+    # has always done.
+    #
+    # When *some* L1 messages are resolved, length alignment matters:
+    # we need to know which slot to keep and which to upgrade. A
+    # length mismatch in that case means the L1 reader saw something
+    # we can't safely realign, so we bail to ``None`` rather than
+    # risk swapping a resolved slot with a freshly resolved one in
+    # the wrong position.
+    all_unresolved = all(m.template_kind is TemplateKind.UNRESOLVED for m in existing)
+    if not all_unresolved and len(elts) != len(existing):
+        return None
 
-    return out if any_resolved else None
+    if all_unresolved:
+        # Rebuild from AST — the historical behaviour. L1 had nothing
+        # worth preserving, so the post-pass owns the whole list.
+        out: list[Message] = []
+        any_resolved = False
+        for item in elts:
+            msg = _resolve_list_item_to_message(item, locals_map, module_consts, module_funcs)
+            if msg is None:
+                out.append(
+                    Message(
+                        role=Role.USER,
+                        template_text="",
+                        template_kind=TemplateKind.UNRESOLVED,
+                    )
+                )
+                continue
+            if msg.template_kind is not TemplateKind.UNRESOLVED:
+                any_resolved = True
+            out.append(msg)
+        return out if any_resolved else None
+
+    # Mixed case: lengths match, some L1 messages are resolved. Keep
+    # L1's resolved entries byte-for-byte, only try to upgrade the
+    # UNRESOLVED ones.
+    out_mixed: list[Message] = []
+    flipped_to_resolved = False
+    for item, current in zip(elts, existing, strict=True):
+        if current.template_kind is not TemplateKind.UNRESOLVED:
+            out_mixed.append(current)
+            continue
+        upgraded = _resolve_list_item_to_message(item, locals_map, module_consts, module_funcs)
+        if upgraded is None or upgraded.template_kind is TemplateKind.UNRESOLVED:
+            out_mixed.append(current)
+            continue
+        out_mixed.append(upgraded)
+        flipped_to_resolved = True
+    return out_mixed if flipped_to_resolved else None
 
 
 def _resolve_list_item_to_message(

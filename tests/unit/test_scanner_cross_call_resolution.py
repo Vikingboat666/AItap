@@ -593,3 +593,183 @@ def test_wrapper_link_with_sibling_call_in_kwarg_still_links(
     # as the wrapper; pass 2 still picks ``messages`` and links.
     assert "linked-from-builder" in wrapper.tags
     assert "sibling-call template." in wrapper.messages[0].template_text
+
+
+# --------------------------------------------------------------------------- #
+# Partial-builder upgrade (PR landing this fix)                               #
+# --------------------------------------------------------------------------- #
+#
+# Before this fix, ``_is_builder_upgrade_candidate`` required *every*
+# message to be UNRESOLVED before pass 1 would run. cc-project's
+# ``build_importance_scoring_messages`` shape (literal system + Name-
+# reference user) landed as 1/2 resolved at L1 and stayed there
+# forever because pass 1 skipped the site. The new behaviour: any
+# UNRESOLVED message triggers eligibility; the upgrader iterates
+# pairwise with the AST elements and upgrades only what L1 missed,
+# leaving the literal slot byte-for-byte unchanged.
+
+
+def test_builder_upgrade_fills_partial_resolution_keeps_l1_literal(
+    tmp_path: Path,
+) -> None:
+    """The exact cc-project ``build_importance_scoring_messages``
+    shape: one literal system message + one user message whose
+    content is a Name reference to a function-local
+    ``user_content = dedent(f"...").strip()`` assignment.
+
+    Before this fix the site stayed at 1/2 (system literal resolved,
+    user UNRESOLVED). After: 2/2, system message preserved
+    byte-for-byte, user message resolved via the post-pass.
+    """
+    _write(
+        tmp_path / "prompts.py",
+        """
+        from textwrap import dedent
+
+        SYSTEM_LINE = "You are a concise scoring assistant. Return JSON."
+
+        def build_importance_scoring_messages(memory: str) -> list[dict[str, str]]:
+            user_content = dedent(f'''
+                Rate the importance of: {memory}
+                Return only: {{"importance": <float>}}
+            ''').strip()
+            return [
+                {"role": "system", "content": SYSTEM_LINE},
+                {"role": "user", "content": user_content},
+            ]
+        """,
+    )
+
+    result = scan_project(tmp_path)
+    sites = _by_name(result.prompts)
+
+    builder = sites["build_importance_scoring_messages"]
+    assert "builder-body-resolved" in builder.tags
+    assert len(builder.messages) == 2
+
+    system_msg, user_msg = builder.messages
+    # System: byte-for-byte from L1 (kind=LITERAL), no rewrite.
+    assert system_msg.role.value == "system"
+    assert system_msg.template_kind is TemplateKind.LITERAL
+    assert system_msg.template_text == ("You are a concise scoring assistant. Return JSON.")
+    # User: post-pass filled in the dedent-stripped f-string.
+    assert user_msg.role.value == "user"
+    assert user_msg.template_kind is TemplateKind.FSTRING
+    assert "Rate the importance of:" in user_msg.template_text
+    assert any(v.name == "memory" for v in user_msg.variables)
+
+
+def test_builder_upgrade_keeps_l1_resolved_message_when_post_pass_cant_resolve_other(
+    tmp_path: Path,
+) -> None:
+    """A builder with one L1-resolved literal + one truly
+    unresolvable Name (no matching assignment in the function body
+    or module) → post-pass keeps the literal byte-for-byte and
+    leaves the unresolvable slot UNRESOLVED. The site is **not**
+    tagged ``builder-body-resolved`` because nothing flipped.
+    """
+    _write(
+        tmp_path / "prompts.py",
+        """
+        def build_partial_messages(payload: dict) -> list[dict[str, str]]:
+            return [
+                {"role": "system", "content": "literal system."},
+                {"role": "user", "content": payload["from_runtime"]},
+            ]
+        """,
+    )
+
+    result = scan_project(tmp_path)
+    sites = _by_name(result.prompts)
+
+    builder = sites["build_partial_messages"]
+    # Nothing flipped → the post-pass returned None → no tag added.
+    assert "builder-body-resolved" not in builder.tags
+    # The L1 literal is still readable.
+    system_msg = builder.messages[0]
+    assert "literal system." in system_msg.template_text
+
+
+def test_builder_upgrade_partial_run_is_idempotent(tmp_path: Path) -> None:
+    """A partial-upgrade run leaves the site in a state where every
+    message is either L1-resolved or post-pass-resolved. A second
+    run finds ``any(unresolved)`` False on the upgraded site and
+    treats it like a fully-resolved builder — no second tag, no
+    rewrite. Pin the no-op so a regression that double-runs the
+    upgrade (or strips a tag) trips here.
+    """
+    _write(
+        tmp_path / "prompts.py",
+        """
+        from textwrap import dedent
+
+        def build_topic_partial_messages(topic: str) -> list[dict[str, str]]:
+            user_content = dedent(f'''
+                please discuss {topic}.
+            ''').strip()
+            return [
+                {"role": "system", "content": "literal system."},
+                {"role": "user", "content": user_content},
+            ]
+        """,
+    )
+
+    first = scan_project(tmp_path)
+    second = scan_project(tmp_path)
+
+    a = _by_name(first.prompts)["build_topic_partial_messages"]
+    b = _by_name(second.prompts)["build_topic_partial_messages"]
+    assert [m.template_text for m in a.messages] == [m.template_text for m in b.messages]
+    assert a.tags == b.tags
+    # The tag must appear exactly once on each pass, not accumulate
+    # across runs.
+    assert a.tags.count("builder-body-resolved") == 1
+
+
+def test_partial_builder_unblocks_wrapper_link_to_full_text(tmp_path: Path) -> None:
+    """End-to-end: when a partial builder gets upgraded to 2/2 by
+    pass 1, a wrapper-call site that linked at 1/2 before now picks
+    up the full text via pass 2. The cc-project ``score_importance``
+    wrapper was the live case — fixing the partial builder
+    cascades."""
+    _write(
+        tmp_path / "agent.py",
+        """
+        from textwrap import dedent
+
+        def build_partial_link_messages(memory: str) -> list[dict[str, str]]:
+            user_content = dedent(f'''
+                Memory to score: {memory}.
+            ''').strip()
+            return [
+                {"role": "system", "content": "judge memory importance."},
+                {"role": "user", "content": user_content},
+            ]
+
+        class LLMClient:
+            async def complete(self, messages, **kwargs):
+                ...
+
+        class Scorer:
+            def __init__(self) -> None:
+                self._llm = LLMClient()
+
+            async def score(self, memory: str) -> None:
+                messages = build_partial_link_messages(memory)
+                await self._llm.complete(messages, task_type="score")
+        """,
+    )
+
+    result = scan_project(tmp_path)
+    sites = _by_name(result.prompts)
+
+    builder = sites["build_partial_link_messages"]
+    assert "builder-body-resolved" in builder.tags
+    assert all(m.template_kind is not TemplateKind.UNRESOLVED for m in builder.messages)
+
+    wrapper = sites["score"]
+    assert "linked-from-builder" in wrapper.tags
+    # Both messages flow through — system literal AND post-pass-
+    # resolved user — to the wrapper site.
+    assert "judge memory importance." in wrapper.messages[0].template_text
+    assert "Memory to score:" in wrapper.messages[1].template_text
