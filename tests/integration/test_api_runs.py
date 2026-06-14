@@ -347,30 +347,32 @@ async def test_post_run_with_unknown_profile_id_marks_failed_and_records_profile
     client: AsyncClient,
     settings: Settings,
 ) -> None:
-    """An unknown profile id fails the run *and* persists ``profile_id``.
+    """An unknown profile id fails the run with a 422 carrying the
+    plain-language detail *and* persists ``profile_id``.
 
-    Locks down the A2-P1 failure contract so A2-P2 (which will surface
-    the plain-language ``ValueError`` message as a 422 HTTPException
-    detail in the route layer) has an unambiguous baseline to refer
-    back to: today the dispatch adapter re-raises the unknown-profile
-    ``ValueError`` and the route layer's exception handler returns 500
-    (httpx's ``ASGITransport`` propagates the exception in-process so
-    we ``pytest.raises`` it). The run row carries ``failed`` status,
-    and ``profile_id`` lands in the row so a future failure-detail
-    endpoint can name the offending profile in the UI.
+    A2-P2 delivers the route-layer translation A2-P1 promised: the
+    dispatch adapter's plain-language ``ValueError`` is caught in
+    ``_invoke_runner_safely`` and re-raised as ``HTTPException(422)``
+    with the message as the ``detail`` (CLAUDE.md compliance — the
+    string the user reads in the UI). The run row still carries
+    ``failed`` status, and ``profile_id`` lands in the row so a future
+    failure-detail endpoint can name the offending profile in the UI.
 
     No tmp ``profiles.yaml`` is seeded — the default
     ``_default_profile_client_factory`` resolves an empty profile list
-    and raises ``ValueError`` with the plain-language unknown-id
-    message. We leave the autouse legacy factory in place (the failure
-    happens in the profile path before either factory's mock client is
-    constructed).
+    and raises the unknown-id ``ValueError``. We leave the autouse
+    legacy factory in place (the failure happens in the profile path
+    before either factory's mock client is constructed).
     """
     payload = _run_payload()
     payload["profile_id"] = "not-configured"
 
-    with pytest.raises(ValueError, match="No profile with id 'not-configured'"):
-        await client.post("/api/runs", json=payload)
+    resp = await client.post("/api/runs", json=payload)
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"]
+    assert "No profile with id 'not-configured'" in detail
+    # Plain-language CLAUDE.md compliance — the detail must name the next action.
+    assert "Open Settings" in detail
 
     conn = _open_conn(settings)
     try:

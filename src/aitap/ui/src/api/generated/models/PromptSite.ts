@@ -11,14 +11,14 @@ import type { Provider } from './Provider';
  * One identified LLM call point in source code.
  */
 export type PromptSite = {
-    confidence?: Confidence;
     id: string;
+    name: string;
+    provider: Provider;
     location: CodeLocation;
     messages: Array<Message>;
-    name: string;
     parameters?: CallParameters;
-    provider: Provider;
     purpose?: (string | null);
+    confidence?: Confidence;
     tags?: Array<string>;
 };
 

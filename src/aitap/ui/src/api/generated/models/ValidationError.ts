@@ -3,10 +3,10 @@
 /* tslint:disable */
 /* eslint-disable */
 export type ValidationError = {
-    ctx?: Record<string, any>;
-    input?: any;
     loc: Array<(string | number)>;
     msg: string;
     type: string;
+    input?: any;
+    ctx?: Record<string, any>;
 };
 

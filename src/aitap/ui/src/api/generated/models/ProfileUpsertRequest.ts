@@ -26,12 +26,12 @@
  * with ``use_fallback=True``.
  */
 export type ProfileUpsertRequest = {
-    api_key?: (string | null);
-    base_url: string;
     label: string;
+    base_url: string;
+    protocol: 'openai-compat' | 'anthropic';
     model_id: string;
     notes?: string;
-    protocol: 'openai-compat' | 'anthropic';
+    api_key?: (string | null);
     use_fallback?: boolean;
 };
 

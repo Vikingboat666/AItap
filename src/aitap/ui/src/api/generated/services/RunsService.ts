@@ -15,34 +15,6 @@ import { OpenAPI } from '../core/OpenAPI';
 import { request as __request } from '../core/request';
 export class RunsService {
     /**
-     * List Runs Endpoint
-     * List runs, optionally filtered by ``target_id``.
-     *
-     * ``limit`` is clamped to [1, 200] so a malicious query can't drain the
-     * table. The frontend's default page size is 50.
-     * @returns RunListResponse Successful Response
-     * @throws ApiError
-     */
-    public static listRunsEndpointApiRunsGet({
-        targetId,
-        limit = 50,
-    }: {
-        targetId?: (string | null),
-        limit?: number,
-    }): CancelablePromise<RunListResponse> {
-        return __request(OpenAPI, {
-            method: 'GET',
-            url: '/api/runs',
-            query: {
-                'target_id': targetId,
-                'limit': limit,
-            },
-            errors: {
-                422: `Validation Error`,
-            },
-        });
-    }
-    /**
      * Create Run
      * Queue a new run.
      *
@@ -71,6 +43,34 @@ export class RunsService {
             url: '/api/runs',
             body: requestBody,
             mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * List Runs Endpoint
+     * List runs, optionally filtered by ``target_id``.
+     *
+     * ``limit`` is clamped to [1, 200] so a malicious query can't drain the
+     * table. The frontend's default page size is 50.
+     * @returns RunListResponse Successful Response
+     * @throws ApiError
+     */
+    public static listRunsEndpointApiRunsGet({
+        targetId,
+        limit = 50,
+    }: {
+        targetId?: (string | null),
+        limit?: number,
+    }): CancelablePromise<RunListResponse> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/runs',
+            query: {
+                'target_id': targetId,
+                'limit': limit,
+            },
             errors: {
                 422: `Validation Error`,
             },

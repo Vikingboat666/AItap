@@ -8,10 +8,10 @@ import type { EdgeKind } from './EdgeKind';
  * A directed edge: source's output is fed to target.
  */
 export type PipelineEdge = {
-    confidence?: Confidence;
-    kind: EdgeKind;
     source: string;
     target: string;
+    kind: EdgeKind;
     via?: (string | null);
+    confidence?: Confidence;
 };
 

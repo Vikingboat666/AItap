@@ -49,35 +49,6 @@ export class ProfilesService {
         });
     }
     /**
-     * Delete Profile
-     * Remove a profile and (if needed) clear it from the defaults.
-     *
-     * Real delete: the keyring entry is removed (``delete_password``),
-     * the YAML row is dropped, and any :class:`DefaultsConfig` reference
-     * is auto-nulled per Decision 1. The response is the *final* shape
-     * of the profile (configured=False, source="none") so the UI can
-     * flip the row out of the list and update the defaults card in one
-     * state update.
-     * @returns Profile Successful Response
-     * @throws ApiError
-     */
-    public static deleteProfileApiProfilesProfileIdDelete({
-        profileId,
-    }: {
-        profileId: string,
-    }): CancelablePromise<Profile> {
-        return __request(OpenAPI, {
-            method: 'DELETE',
-            url: '/api/profiles/{profile_id}',
-            path: {
-                'profile_id': profileId,
-            },
-            errors: {
-                422: `Validation Error`,
-            },
-        });
-    }
-    /**
      * Update Profile
      * Mutate everything but the id on an existing profile.
      *
@@ -103,6 +74,35 @@ export class ProfilesService {
             },
             body: requestBody,
             mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Delete Profile
+     * Remove a profile and (if needed) clear it from the defaults.
+     *
+     * Real delete: the keyring entry is removed (``delete_password``),
+     * the YAML row is dropped, and any :class:`DefaultsConfig` reference
+     * is auto-nulled per Decision 1. The response is the *final* shape
+     * of the profile (configured=False, source="none") so the UI can
+     * flip the row out of the list and update the defaults card in one
+     * state update.
+     * @returns Profile Successful Response
+     * @throws ApiError
+     */
+    public static deleteProfileApiProfilesProfileIdDelete({
+        profileId,
+    }: {
+        profileId: string,
+    }): CancelablePromise<Profile> {
+        return __request(OpenAPI, {
+            method: 'DELETE',
+            url: '/api/profiles/{profile_id}',
+            path: {
+                'profile_id': profileId,
+            },
             errors: {
                 422: `Validation Error`,
             },

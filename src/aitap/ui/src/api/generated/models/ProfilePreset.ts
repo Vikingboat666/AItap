@@ -13,9 +13,9 @@
  * freely via the Manage presets editor.
  */
 export type ProfilePreset = {
-    base_url: string;
-    model_id: string;
     name: string;
+    base_url: string;
     protocol: 'openai-compat' | 'anthropic';
+    model_id: string;
 };
 

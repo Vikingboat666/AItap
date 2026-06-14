@@ -9,21 +9,6 @@ import { OpenAPI } from '../core/OpenAPI';
 import { request as __request } from '../core/request';
 export class ProfilePresetsService {
     /**
-     * Reset Profile Presets
-     * Restore the seeded starter set, overwriting any user edits.
-     *
-     * Returns the freshly-seeded list so the editor can re-render
-     * without a second round-trip. Idempotent.
-     * @returns ProfilePreset Successful Response
-     * @throws ApiError
-     */
-    public static resetProfilePresetsApiProfilePresetsDelete(): CancelablePromise<Array<ProfilePreset>> {
-        return __request(OpenAPI, {
-            method: 'DELETE',
-            url: '/api/profile-presets',
-        });
-    }
-    /**
      * List Profile Presets
      * Return the current preset list (seeding on first launch).
      * @returns ProfilePreset Successful Response
@@ -60,6 +45,21 @@ export class ProfilePresetsService {
             errors: {
                 422: `Validation Error`,
             },
+        });
+    }
+    /**
+     * Reset Profile Presets
+     * Restore the seeded starter set, overwriting any user edits.
+     *
+     * Returns the freshly-seeded list so the editor can re-render
+     * without a second round-trip. Idempotent.
+     * @returns ProfilePreset Successful Response
+     * @throws ApiError
+     */
+    public static resetProfilePresetsApiProfilePresetsDelete(): CancelablePromise<Array<ProfilePreset>> {
+        return __request(OpenAPI, {
+            method: 'DELETE',
+            url: '/api/profile-presets',
         });
     }
 }

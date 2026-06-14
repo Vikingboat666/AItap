@@ -5,13 +5,13 @@
 import type { Confidence } from './Confidence';
 import type { Provider } from './Provider';
 export type PromptSummary = {
-    confidence: Confidence;
-    file: string;
     id: string;
-    latest_version: number;
-    line_start: number;
     name: string;
     provider: Provider;
+    file: string;
+    line_start: number;
     purpose: (string | null);
+    confidence: Confidence;
+    latest_version: number;
 };
 

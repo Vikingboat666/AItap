@@ -76,9 +76,24 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Client factory indirection (so tests can inject MockLLMClient)
-# ---------------------------------------------------------------------------
+class ProfileDispatchError(ValueError):
+    """User-actionable failure on the multi-provider profile path.
+
+    Raised by :func:`_default_profile_client_factory` when the profile
+    can't be turned into a working LLMClient — unknown profile id or
+    missing API key. The route layer
+    (``_invoke_runner_safely`` in ``src/aitap/server/routes/runs.py``)
+    catches *only this subclass* and translates it into
+    ``HTTPException(422, detail=str(exc))`` so the plain-language
+    message reaches the UI verbatim (CLAUDE.md compliance).
+
+    Other ``ValueError`` raises from elsewhere in the dispatch stack
+    (``unknown target_kind``, ``prompt 'X' not found in store``,
+    malformed payload_json, etc.) keep propagating as 500s — they're
+    real bugs, and a 422 with their raw message would leak internal
+    column names and module-level repr to end users.
+    """
+
 
 # Signature mirrors :func:`aitap.deep.client.get_client` so the default
 # wiring is a straight pass-through and tests can substitute a callable
@@ -127,14 +142,14 @@ def _default_profile_client_factory(settings: Settings, profile_id: str) -> LLMC
     users hit the yaml-save-failed path.
 
     Raises:
-        ValueError: with a plain-language message when the profile id
-            is unknown or has no key. As shipped in A2-P1 the route
-            handler returns a generic 500 and the run row carries the
-            ``failed`` status; the actionable message lands in server
-            logs and is asserted by tests. A2-P2 catches this exception
-            in the route layer and translates it to an
-            ``HTTPException(detail=...)`` so the UI sees the actionable
-            string verbatim.
+        ProfileDispatchError: with a plain-language CLAUDE.md-compliant
+            message when the profile id is unknown or has no key. The
+            route layer catches this subclass specifically (not bare
+            ``ValueError``) and translates it into ``HTTPException(422,
+            detail=...)`` so the UI sees the actionable string
+            verbatim. Other dispatch-layer ``ValueError`` shapes (like
+            ``unknown target_kind`` or ``malformed payload_json``)
+            stay 500s by design — they're bugs, not user errors.
     """
     from aitap.config_io import load_profiles_from_yaml
     from aitap.deep.factory import get_client_for_profile_config
@@ -142,12 +157,12 @@ def _default_profile_client_factory(settings: Settings, profile_id: str) -> LLMC
     profiles, _ = load_profiles_from_yaml(settings)
     profile = next((entry for entry in profiles if entry.id == profile_id), None)
     if profile is None:
-        raise ValueError(
+        raise ProfileDispatchError(
             f"No profile with id {profile_id!r}. Open Settings to add it, then re-run."
         )
     api_key = _secrets.get_key_for_profile(profile_id)
     if not api_key:
-        raise ValueError(
+        raise ProfileDispatchError(
             f"Profile {profile_id!r} has no API key set. Open Settings "
             "and click Test next to it (or set the key under "
             f"profile:{profile_id} in ~/.aitap/secrets.yaml), then re-run."
@@ -448,6 +463,7 @@ def _row_payload(row: sqlite3.Row) -> str:
 __all__ = [
     "ClientFactory",
     "ProfileClientFactory",
+    "ProfileDispatchError",
     "invoke_run",
     "outputs_sidecar_path",
     "set_client_factory",

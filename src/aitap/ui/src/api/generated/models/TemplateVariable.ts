@@ -6,7 +6,7 @@
  * A `{var}` slot inside a template that gets filled at call time.
  */
 export type TemplateVariable = {
-    inferred_type?: (string | null);
     name: string;
+    inferred_type?: (string | null);
 };
 

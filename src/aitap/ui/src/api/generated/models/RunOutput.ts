@@ -4,9 +4,9 @@
 /* eslint-disable */
 export type RunOutput = {
     case_index: number;
-    error?: (string | null);
-    image_path?: (string | null);
-    intermediate?: (Record<string, string> | null);
     text?: (string | null);
+    image_path?: (string | null);
+    error?: (string | null);
+    intermediate?: (Record<string, string> | null);
 };
 

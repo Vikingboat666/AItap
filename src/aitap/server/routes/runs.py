@@ -332,6 +332,25 @@ def _invoke_runner_safely(
     # independently — we don't try to second-guess what the adapter does.
     try:
         invoke(settings=settings, run_id=run_id, payload=payload)
+    except dispatch_module.ProfileDispatchError as exc:
+        # User-actionable profile failure (unknown id, missing key) —
+        # the dispatch layer raises ``ProfileDispatchError`` with a
+        # CLAUDE.md plain-language message that names the next action.
+        # Translate to a 422 so the message reaches the UI verbatim.
+        # The narrow exception class is deliberate: every *other*
+        # ``ValueError`` shape (``unknown target_kind``, ``prompt 'X'
+        # not found in store``, malformed payload_json, etc.) is a bug
+        # and stays a 500 so it surfaces loudly instead of being
+        # silently re-shaped into a user-facing string.
+        # Still mark the run ``failed`` so the dashboard reflects the
+        # terminal state.
+        failover_conn = store_db.connect(settings.db_path)
+        try:
+            store_db.init_db(failover_conn)
+            runs_dao.update_run_status(failover_conn, run_id, status="failed", finished=True)
+        finally:
+            failover_conn.close()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception:
         # Mark the run failed so the UI doesn't show a perpetually-running
         # request when the adapter blows up. Open a fresh connection

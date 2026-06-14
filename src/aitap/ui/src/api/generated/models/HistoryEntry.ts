@@ -3,11 +3,11 @@
 /* tslint:disable */
 /* eslint-disable */
 export type HistoryEntry = {
-    avg_score: (number | null);
+    version: number;
+    note: (string | null);
     created_at: string;
     created_by: 'human' | 'iteration';
-    note: (string | null);
     parent_version: (number | null);
-    version: number;
+    avg_score: (number | null);
 };
 

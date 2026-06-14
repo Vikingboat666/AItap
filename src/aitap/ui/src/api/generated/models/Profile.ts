@@ -12,14 +12,14 @@
  * :mod:`aitap.secrets` — the raw key never appears on this model.
  */
 export type Profile = {
-    base_url: string;
     id: string;
-    key_configured: boolean;
-    key_masked?: (string | null);
-    key_source: 'keyring' | 'fallback' | 'none';
     label: string;
+    base_url: string;
+    protocol: 'openai-compat' | 'anthropic';
     model_id: string;
     notes?: string;
-    protocol: 'openai-compat' | 'anthropic';
+    key_configured: boolean;
+    key_source: 'keyring' | 'fallback' | 'none';
+    key_masked?: (string | null);
 };
 

@@ -28,6 +28,33 @@ export class SettingsService {
         });
     }
     /**
+     * Put Settings Defaults
+     * Pick which configured profiles are the default model + judge.
+     *
+     * The route delegates validation + persistence to
+     * :func:`aitap.server.routes.profiles.set_defaults` so the in-process
+     * cache and the YAML mirror stay in lockstep. 422 + plain-language
+     * detail when a referenced profile id doesn't exist; ``None`` on
+     * either field clears the corresponding default.
+     * @returns Defaults Successful Response
+     * @throws ApiError
+     */
+    public static putSettingsDefaultsApiSettingsDefaultsPut({
+        requestBody,
+    }: {
+        requestBody: Defaults,
+    }): CancelablePromise<Defaults> {
+        return __request(OpenAPI, {
+            method: 'PUT',
+            url: '/api/settings/defaults',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
      * Get Cost Estimate
      * Estimate cost of running a prompt against *model* once.
      *
@@ -56,33 +83,6 @@ export class SettingsService {
                 'prompt_id': promptId,
                 'model': model,
             },
-            errors: {
-                422: `Validation Error`,
-            },
-        });
-    }
-    /**
-     * Put Settings Defaults
-     * Pick which configured profiles are the default model + judge.
-     *
-     * The route delegates validation + persistence to
-     * :func:`aitap.server.routes.profiles.set_defaults` so the in-process
-     * cache and the YAML mirror stay in lockstep. 422 + plain-language
-     * detail when a referenced profile id doesn't exist; ``None`` on
-     * either field clears the corresponding default.
-     * @returns Defaults Successful Response
-     * @throws ApiError
-     */
-    public static putSettingsDefaultsApiSettingsDefaultsPut({
-        requestBody,
-    }: {
-        requestBody: Defaults,
-    }): CancelablePromise<Defaults> {
-        return __request(OpenAPI, {
-            method: 'PUT',
-            url: '/api/settings/defaults',
-            body: requestBody,
-            mediaType: 'application/json',
             errors: {
                 422: `Validation Error`,
             },

@@ -6,9 +6,9 @@
  * Trigger one round of self-iteration based on collected feedback for the run.
  */
 export type IterateRequest = {
-    convergence_threshold?: number;
-    include_downstream?: boolean;
     judge_model?: (string | null);
     max_iterations?: number;
+    convergence_threshold?: number;
+    include_downstream?: boolean;
 };
 

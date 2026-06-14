@@ -6,10 +6,10 @@
  * Where in the source tree a finding lives. Paths are project-relative POSIX.
  */
 export type CodeLocation = {
-    col_end?: (number | null);
-    col_start?: (number | null);
     file: string;
-    line_end: number;
     line_start: number;
+    line_end: number;
+    col_start?: (number | null);
+    col_end?: (number | null);
 };
 

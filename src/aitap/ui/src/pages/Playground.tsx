@@ -31,6 +31,7 @@ import { useTranslation } from "react-i18next";
 
 import {
   PipelinesService,
+  ProfilesService,
   PromptsService,
   RunsService,
   SettingsService,
@@ -39,6 +40,7 @@ import type {
   FeedbackCreate,
   FeedbackResponse,
   IterateSessionResponse,
+  Profile,
   PromptDetailResponse,
   RunDetailResponse,
 } from "../api/generated";
@@ -144,6 +146,12 @@ export function Playground() {
   const [cases, setCases] = useState<CaseDraft[]>(DEFAULT_DRAFTS);
   const [model, setModel] = useState<string>("");
   const [temperature, setTemperature] = useState<number>(0.2);
+  // Selected multi-provider profile id (A2-P2). ``null`` means "use the
+  // legacy provider/model dispatch" — same behaviour the page had
+  // before this PR. When set, the wire payload carries ``profile_id``
+  // and the backend routes through ``deep.factory.get_client_for_profile_config``.
+  const [profileId, setProfileId] = useState<string | null>(null);
+  const [profileSeeded, setProfileSeeded] = useState(false);
   const [activeRun, setActiveRun] = useState<RunDetailResponse | null>(null);
 
   // Auto-iterate state — modal visibility + the active session id once
@@ -161,6 +169,62 @@ export function Playground() {
       setModel(settingsQ.data.model);
     }
   }, [settingsQ.data, model]);
+
+  // Multi-provider profile picker (A2-P2). Lists every configured
+  // profile so the user can pick one and route the run through the
+  // profile-keyed dispatch instead of the legacy provider/model
+  // pathway. Empty list ⇒ the picker renders an empty-state pointing
+  // at Settings.
+  const profilesQ = useQuery<Profile[]>({
+    queryKey: ["profiles"],
+    queryFn: () => ProfilesService.listProfilesApiProfilesGet(),
+  });
+
+  // Seed profileId once both queries land. We prefer the configured
+  // default (``settings.defaults.model_profile_id``) when the profile
+  // is still present; otherwise leave the picker on the legacy
+  // fallback so today's behaviour stays the default. The
+  // ``profileSeeded`` flag means a user who clicks the legacy option
+  // once doesn't get reverted to the default on the next refetch.
+  //
+  // Race we care about (caught by tech review of A2-P2): the first
+  // ``profilesQ.data`` arrival can land *before* it actually carries
+  // the configured default (cold-cache, list still being scanned).
+  // We only flip ``profileSeeded`` on the success path or on an
+  // explicit-no-default path so a later refetch that *does* include
+  // the default still gets to seed.
+  useEffect(() => {
+    if (profileSeeded) return;
+    if (!profilesQ.data || !settingsQ.data) return;
+    const defaultProfileId = settingsQ.data.defaults?.model_profile_id ?? null;
+    if (!defaultProfileId) {
+      // No default configured at all — nothing for a future refetch to
+      // resolve, lock in the legacy fallback.
+      setProfileSeeded(true);
+      return;
+    }
+    if (profilesQ.data.some((p) => p.id === defaultProfileId)) {
+      setProfileId(defaultProfileId);
+      setProfileSeeded(true);
+    }
+    // Otherwise: leave ``profileSeeded`` false so the next
+    // ``profilesQ`` payload that contains the configured default can
+    // still seed it.
+  }, [profilesQ.data, settingsQ.data, profileSeeded]);
+
+  // Reconcile against the live profile list. If the user picked a
+  // profile and a refetch later returns a list that doesn't contain
+  // it (deleted in another tab, renamed, …), drop back to the legacy
+  // fallback so the wire stays consistent with what the picker shows
+  // (browsers fall back to the empty option when ``<select value>``
+  // doesn't match, but the React state would still send the stale
+  // id). Caught by tech review of A2-P2.
+  useEffect(() => {
+    if (!profilesQ.data || profileId === null) return;
+    if (!profilesQ.data.some((p) => p.id === profileId)) {
+      setProfileId(null);
+    }
+  }, [profilesQ.data, profileId]);
 
   // Pull the selected prompt detail so we know which template vars to
   // seed new cases with. Pipelines don't have a single var list — we
@@ -284,6 +348,11 @@ export function Playground() {
           target_version: targetVersion,
           provider,
           model: effectiveModel,
+          // A2-P2: when a profile is selected the backend routes
+          // through ``deep.factory.get_client_for_profile_config`` and
+          // ignores ``provider``/``model``. ``null`` (or omitted) keeps
+          // the legacy provider/model dispatch unchanged.
+          profile_id: profileId,
           parameters: {
             model: effectiveModel,
             temperature,
@@ -407,6 +476,13 @@ export function Playground() {
           pipelinesLoading={pipelinesQ.isLoading}
           mode={mode}
           onModeChange={handleModeChange}
+        />
+
+        <ProfileSelector
+          profiles={profilesQ.data ?? []}
+          profileId={profileId}
+          onProfileChange={setProfileId}
+          loading={profilesQ.isLoading}
         />
 
         <ModelControls
@@ -767,6 +843,75 @@ function TargetList({
         </ul>
       )}
     </div>
+  );
+}
+
+/**
+ * Multi-provider profile picker (A2-P2). Lets the user pick one of the
+ * configured profiles so the run dispatches through
+ * ``deep.factory.get_client_for_profile_config``; leaving it on the
+ * legacy option falls back to ``provider`` + ``model``.
+ *
+ * Empty state: no profiles configured ⇒ point the user at Settings
+ * (CLAUDE.md plain-language: explain the cause + name the next action).
+ */
+function ProfileSelector({
+  profiles,
+  profileId,
+  onProfileChange,
+  loading,
+}: {
+  profiles: Profile[];
+  profileId: string | null;
+  onProfileChange: (id: string | null) => void;
+  loading: boolean;
+}) {
+  const { t } = useTranslation();
+  const hasProfiles = profiles.length > 0;
+  return (
+    <Card>
+      <CardHeader title={t("playground.profile")} />
+      <div className="space-y-2 px-4 py-3">
+        {loading ? (
+          <div className="text-xs italic text-ink-400">
+            {t("playground.profileLoading")}
+          </div>
+        ) : !hasProfiles ? (
+          <div className="text-xs text-ink-500">
+            {t("playground.profileEmpty")}
+          </div>
+        ) : (
+          <>
+            <label
+              htmlFor="profile-select"
+              className="mb-1 block text-[11px] uppercase text-ink-400"
+            >
+              {t("playground.profileLabel")}
+            </label>
+            <select
+              id="profile-select"
+              value={profileId ?? ""}
+              onChange={(e) =>
+                onProfileChange(e.target.value === "" ? null : e.target.value)
+              }
+              className="w-full rounded-md border border-ink-200 px-2 py-1 text-xs focus:border-brand-500 focus:outline-none"
+            >
+              <option value="">{t("playground.profileUseLegacy")}</option>
+              {profiles.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label} ({p.model_id})
+                </option>
+              ))}
+            </select>
+            <p className="text-[11px] text-ink-400">
+              {profileId === null
+                ? t("playground.profileHintLegacy")
+                : t("playground.profileHintActive")}
+            </p>
+          </>
+        )}
+      </div>
+    </Card>
   );
 }
 
