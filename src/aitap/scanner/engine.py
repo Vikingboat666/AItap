@@ -52,6 +52,12 @@ DEFAULT_IGNORE_DIRS: frozenset[str] = frozenset(
         ".idea",
         ".vscode",
         "site-packages",
+        # Test directories are development artifacts — their contents are
+        # almost never real prompts the user wants to iterate on. Users who
+        # keep LLM-powered fixtures under tests/ can still scan them with:
+        #     aitap scan tests/
+        "tests",
+        "test",
     }
 )
 
