@@ -65,6 +65,30 @@ def _extract_unreleased_section(changelog: str) -> str:
     return match.group(1) if match else ""
 
 
+def _extract_topmost_versioned_section(changelog: str) -> str:
+    """Return the body of the ``## [N.N.NaN]`` section immediately
+    below ``[Unreleased]``, or empty.
+
+    Why this exists: a release PR moves all of ``[Unreleased]``'s
+    entries into the just-tagged version section in the same commit
+    that bumps ``pyproject.toml``. If the doc-currency check looked at
+    ``[Unreleased]`` *only*, that release PR's own CI would fail —
+    the PRs accumulated since the last tag would still be in the
+    ``git log`` scan, but they'd no longer be in ``[Unreleased]``
+    (they'd be in the new ``[0.1.0aN]`` section). Including the
+    topmost versioned section reflects the release-bookkeeping
+    pattern documented in Keep a Changelog: at release time, you
+    rename ``[Unreleased]`` to ``[N.N.N]``, reset ``[Unreleased]``,
+    and move on.
+    """
+    match = re.search(
+        r"^##\s*\[\d+\.\d+\.\d+(?:[ab]\d+)?\][^\n]*\n(.*?)(?=^##\s*\[)",
+        changelog,
+        re.MULTILINE | re.DOTALL,
+    )
+    return match.group(1) if match else ""
+
+
 def _last_released_tag() -> str | None:
     """The most recent ``v…``-prefixed tag, or None if no release yet."""
     try:
@@ -100,7 +124,12 @@ def test_changelog_unreleased_references_every_recent_pr() -> None:
     )
 
     changelog = (_REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    unreleased = _extract_unreleased_section(changelog)
+    # Scan both ``[Unreleased]`` and the topmost versioned section so
+    # that a release PR (which moves entries out of [Unreleased] into a
+    # fresh ``[N.N.N]`` section in the same commit) passes the check.
+    unreleased = _extract_unreleased_section(changelog) + _extract_topmost_versioned_section(
+        changelog
+    )
 
     missing: list[tuple[str, str]] = []
     for raw_block in log.split("---END---"):
