@@ -182,22 +182,49 @@ export function Playground() {
 
   // Seed profileId once both queries land. We prefer the configured
   // default (``settings.defaults.model_profile_id``) when the profile
-  // is still present; otherwise leave the picker on "use legacy
-  // provider/model" so today's behaviour stays the default. The
-  // ``profileSeeded`` flag means a user who clicks "use legacy" once
-  // doesn't get reverted to the default on the next refetch.
+  // is still present; otherwise leave the picker on the legacy
+  // fallback so today's behaviour stays the default. The
+  // ``profileSeeded`` flag means a user who clicks the legacy option
+  // once doesn't get reverted to the default on the next refetch.
+  //
+  // Race we care about (caught by tech review of A2-P2): the first
+  // ``profilesQ.data`` arrival can land *before* it actually carries
+  // the configured default (cold-cache, list still being scanned).
+  // We only flip ``profileSeeded`` on the success path or on an
+  // explicit-no-default path so a later refetch that *does* include
+  // the default still gets to seed.
   useEffect(() => {
     if (profileSeeded) return;
     if (!profilesQ.data || !settingsQ.data) return;
     const defaultProfileId = settingsQ.data.defaults?.model_profile_id ?? null;
-    if (
-      defaultProfileId &&
-      profilesQ.data.some((p) => p.id === defaultProfileId)
-    ) {
-      setProfileId(defaultProfileId);
+    if (!defaultProfileId) {
+      // No default configured at all — nothing for a future refetch to
+      // resolve, lock in the legacy fallback.
+      setProfileSeeded(true);
+      return;
     }
-    setProfileSeeded(true);
+    if (profilesQ.data.some((p) => p.id === defaultProfileId)) {
+      setProfileId(defaultProfileId);
+      setProfileSeeded(true);
+    }
+    // Otherwise: leave ``profileSeeded`` false so the next
+    // ``profilesQ`` payload that contains the configured default can
+    // still seed it.
   }, [profilesQ.data, settingsQ.data, profileSeeded]);
+
+  // Reconcile against the live profile list. If the user picked a
+  // profile and a refetch later returns a list that doesn't contain
+  // it (deleted in another tab, renamed, …), drop back to the legacy
+  // fallback so the wire stays consistent with what the picker shows
+  // (browsers fall back to the empty option when ``<select value>``
+  // doesn't match, but the React state would still send the stale
+  // id). Caught by tech review of A2-P2.
+  useEffect(() => {
+    if (!profilesQ.data || profileId === null) return;
+    if (!profilesQ.data.some((p) => p.id === profileId)) {
+      setProfileId(null);
+    }
+  }, [profilesQ.data, profileId]);
 
   // Pull the selected prompt detail so we know which template vars to
   // seed new cases with. Pipelines don't have a single var list — we

@@ -132,6 +132,96 @@ describe("Playground — multi-provider profile picker (A2-P2)", () => {
     expect(captured.body!.model).toBeDefined();
   });
 
+  it("seeds the picker on a later refetch when the first /api/profiles response is empty", async () => {
+    // Regression test for the tech-review-caught race: ``profilesQ.data``
+    // can arrive empty first (cold cache, scan in progress), and we
+    // must NOT mark ``profileSeeded`` as done in that case — a later
+    // refetch that *does* contain the configured default has to seed.
+    installRunCapture();
+    let callCount = 0;
+    server.use(
+      http.get("/api/profiles", () => {
+        callCount += 1;
+        if (callCount === 1) return HttpResponse.json([]);
+        // Subsequent calls (window-focus refetch, manual invalidation)
+        // return the configured default.
+        return HttpResponse.json([
+          {
+            id: "prof_default",
+            label: "Default OpenAI",
+            base_url: "https://api.openai.com/v1",
+            protocol: "openai-compat" as const,
+            model_id: "gpt-4o-mini",
+            notes: "",
+            key_configured: true,
+            key_source: "keyring" as const,
+            key_masked: "sk-...xxxx",
+          },
+        ]);
+      }),
+    );
+
+    const { queryClient } = renderWithProviders(<Playground />, {
+      route: "/playground/pipeline/pl_test_one",
+      path: "/playground/:targetKind/:targetId",
+    });
+
+    // First arrival: empty list. Empty-state visible, no picker.
+    await screen.findByText(/Open Settings to add one/i);
+    expect(screen.queryByLabelText(/use profile/i)).toBeNull();
+
+    // Force a refetch that now contains the configured default.
+    await queryClient.invalidateQueries({ queryKey: ["profiles"] });
+
+    const select = (await screen.findByLabelText(/use profile/i)) as HTMLSelectElement;
+    await waitFor(() => expect(select.value).toBe("prof_default"));
+  });
+
+  it("falls back to legacy when the picked profile disappears from a later refetch", async () => {
+    // Regression test for the tech-review-caught race: user picks a
+    // profile, it's deleted in another tab, refetch returns a list
+    // that no longer contains it. The React state must reconcile to
+    // ``null`` so the wire stops sending the dangling id.
+    installRunCapture();
+    let callCount = 0;
+    server.use(
+      http.get("/api/profiles", () => {
+        callCount += 1;
+        if (callCount === 1) {
+          return HttpResponse.json([
+            {
+              id: "prof_default",
+              label: "Default OpenAI",
+              base_url: "https://api.openai.com/v1",
+              protocol: "openai-compat" as const,
+              model_id: "gpt-4o-mini",
+              notes: "",
+              key_configured: true,
+              key_source: "keyring" as const,
+              key_masked: "sk-...xxxx",
+            },
+          ]);
+        }
+        return HttpResponse.json([]); // profile deleted elsewhere
+      }),
+    );
+
+    const { queryClient } = renderWithProviders(<Playground />, {
+      route: "/playground/pipeline/pl_test_one",
+      path: "/playground/:targetKind/:targetId",
+    });
+
+    const select = (await screen.findByLabelText(/use profile/i)) as HTMLSelectElement;
+    await waitFor(() => expect(select.value).toBe("prof_default"));
+
+    // Profile goes away.
+    await queryClient.invalidateQueries({ queryKey: ["profiles"] });
+
+    // Picker collapses to the empty-state (no profiles), and the
+    // React state behind the wire is back on legacy.
+    await screen.findByText(/Open Settings to add one/i);
+  });
+
   it("renders the plain-language empty state when no profiles exist", async () => {
     server.use(
       http.get("/api/profiles", () => HttpResponse.json([])),
