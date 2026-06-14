@@ -6,13 +6,21 @@ with stale "Status: approved" headers long after the work was done.
 The cleanup commit `7244aea` brought things back in line; this test
 module makes sure the drift can't recur.
 
-We enforce two things at the test-gate level (and therefore at CI):
+We enforce three things at the test-gate level (and therefore at CI):
 
-1. **CHANGELOG currency** — every squash-merged PR since the last
-   released `v…` tag must be mentioned in CHANGELOG.md's
+1. **CHANGELOG currency (post-merge)** — every squash-merged PR since
+   the last released `v…` tag must be mentioned in CHANGELOG.md's
    ``[Unreleased]`` section. Opt out with ``[no-changelog]`` in the
    merge commit message for trivial PRs (typo fix, doc reflow).
-2. **Design-doc Status freshness** — every ``docs/*-design.md`` must
+2. **CHANGELOG currency (PR-time)** — in GitHub Actions ``pull_request``
+   context, the current PR's own number must also appear in
+   ``[Unreleased]`` *before* merge. This closes the structural gap
+   where check (1) above only catches violations *after* squash has
+   already happened — PRs #65 and #67 both shipped without CHANGELOG
+   entries because their PR-time CI couldn't see the post-squash
+   ``(#NNN)`` subject. Opt out via ``[no-changelog]`` in the PR title
+   or body. See PR #69 for the live rationale.
+3. **Design-doc Status freshness** — every ``docs/*-design.md`` must
    carry a ``Status:`` line in its first 30 lines, using one of the
    approved keywords (Draft / Approved / Implemented / Partial /
    Superseded). Forces the maintainer to categorise the doc rather
@@ -25,6 +33,8 @@ full history.
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -159,6 +169,89 @@ def test_changelog_unreleased_references_every_recent_pr() -> None:
             "is truly not worth a CHANGELOG entry (typo fix, internal-only "
             "comment cleanup, etc.).\n\n"
             "Background: CLAUDE.md → 'Documentation currency — non-negotiable'."
+        )
+
+
+def _current_pr_context() -> tuple[str, str, str] | None:
+    """Return ``(pr_number, pr_title, pr_body)`` when CI is running on a
+    pull-request event, or ``None`` otherwise.
+
+    GitHub Actions exposes the PR number via ``GITHUB_REF`` (shape:
+    ``refs/pull/<N>/merge``) and the title + body via the JSON payload
+    at ``GITHUB_EVENT_PATH``. Outside CI all three env vars are
+    typically unset; we treat that as "no PR context" and the caller
+    skips.
+    """
+    if os.environ.get("GITHUB_EVENT_NAME") != "pull_request":
+        return None
+    ref = os.environ.get("GITHUB_REF", "")
+    ref_match = re.match(r"refs/pull/(\d+)/", ref)
+    if ref_match is None:
+        return None
+    pr_number = ref_match.group(1)
+
+    title = ""
+    body = ""
+    event_path = os.environ.get("GITHUB_EVENT_PATH")
+    if event_path and Path(event_path).is_file():
+        try:
+            event = json.loads(Path(event_path).read_text(encoding="utf-8"))
+            pull = event.get("pull_request") or {}
+            title = pull.get("title", "") or ""
+            body = pull.get("body", "") or ""
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    return pr_number, title, body
+
+
+def test_changelog_unreleased_references_current_pr() -> None:
+    """In a GitHub Actions ``pull_request`` build, the *current* PR's
+    number must already appear in CHANGELOG.md's ``[Unreleased]``
+    section before merge.
+
+    Why this exists alongside
+    :func:`test_changelog_unreleased_references_every_recent_pr`:
+
+    The post-merge check above only catches a PR after squash has
+    already happened, because it depends on the ``(#NNN)`` suffix that
+    GitHub adds to the squash commit subject. At PR-time, the PR's own
+    head commit subject doesn't have that suffix yet — so the
+    post-merge check silently skips the in-flight PR, lets it pass CI
+    with no CHANGELOG entry, and the next PR opens to a red main. PRs
+    #65 and #67 both shipped that way; PR #68 was a pure CHANGELOG
+    backfill to clear the resulting debt. This test closes the gap.
+
+    Opt-out: include the literal ``[no-changelog]`` anywhere in the PR
+    title OR the PR body (the same marker the post-merge check honours
+    on squash commit messages — kept identical so contributors learn
+    one convention, not two).
+
+    Locally (no CI env vars set) the test skips. The post-merge check
+    still runs and protects the long-term invariant.
+    """
+    ctx = _current_pr_context()
+    if ctx is None:
+        pytest.skip("not a GitHub Actions pull_request build")
+    pr_number, pr_title, pr_body = ctx
+
+    if "[no-changelog]" in pr_title or "[no-changelog]" in pr_body:
+        return
+
+    changelog = (_REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    unreleased = _extract_unreleased_section(changelog) + _extract_topmost_versioned_section(
+        changelog
+    )
+
+    if f"#{pr_number}" not in unreleased:
+        pytest.fail(
+            f"Current PR #{pr_number} doesn't appear in CHANGELOG.md "
+            "[Unreleased]. Add an entry now — don't merge and let the "
+            "post-squash check catch it on main (then the *next* PR "
+            "would open to a red main, which is how PRs #65 and #67 "
+            "produced the #68 backfill).\n\n"
+            "Opt out by including [no-changelog] in your PR title or "
+            "description (same convention as the post-merge check)."
         )
 
 

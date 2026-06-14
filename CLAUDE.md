@@ -43,7 +43,10 @@ Every user-facing string — UI text, CLI output, error messages, empty states, 
 
 Stale docs mislead the next session. We learned this the hard way (seven PRs piled up in `CHANGELOG.md` before anyone noticed, and three `docs/*-design.md` headers said "approved" months after the work shipped). To keep the working repo honest, two of these are mechanically enforced — see `tests/unit/test_doc_currency.py`:
 
-- 🤖 **Every merged PR must update `CHANGELOG.md`** under `[Unreleased]` before merge. The `test_changelog_unreleased_references_every_recent_pr` test scans every squash-merge commit since the last released `v…` tag and asserts each `#NNN` shows up in the `[Unreleased]` section. Truly trivial PRs (typo fix, comment-only cleanup) can opt out with `[no-changelog]` anywhere in the merge commit message.
+- 🤖 **Every merged PR must update `CHANGELOG.md`** under `[Unreleased]` before merge. Two complementary tests enforce this:
+  - `test_changelog_unreleased_references_every_recent_pr` (post-merge sentinel) scans every squash-merge commit since the last released `v…` tag and asserts each `#NNN` shows up in `[Unreleased]` (or the topmost `[N.N.N]` section, for the release-PR bookkeeping pattern). This is the long-term invariant.
+  - `test_changelog_unreleased_references_current_pr` (PR-time guard, added in PR #69) fires only in GitHub Actions `pull_request` builds — it parses the current PR number from `GITHUB_REF` and the title/body from `GITHUB_EVENT_PATH`, and fails the PR's own CI when its `#NNN` is missing from `[Unreleased]`. Catches violations *before* merge so the squash-deferred gap that ate PRs #65 / #67 (and required PR #68 as a pure backfill) can't recur.
+  - Opt-out: include the literal `[no-changelog]` in the merge commit message (post-merge check) or in the PR title or body (PR-time check) for truly trivial PRs (typo fix, comment-only cleanup). One marker, two surfaces.
 - 🤖 **Every `docs/*-design.md` carries an explicit `Status:` line** in the first 30 lines, using one of the canonical keywords: `Draft` / `Approved` / `Implemented` / `Partial` / `Superseded`. `test_every_design_doc_carries_an_explicit_status_line` enforces this. When a worktree mentioned in a design doc merges, its `Status:` line gets updated **in the same PR**.
 
 Two more conventions are reviewer-enforced (not mechanical, but the PR template asks):
