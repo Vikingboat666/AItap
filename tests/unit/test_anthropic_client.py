@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import types
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -118,7 +119,16 @@ def test_constructing_client_does_not_touch_network(monkeypatch: pytest.MonkeyPa
 
 async def test_chat_raises_provider_auth_error_when_key_missing(
     monkeypatch: pytest.MonkeyPatch,
+    isolated_secrets_home: Path,
 ) -> None:
+    """Mocks all three secret sources so the "missing key" claim is
+    actually missing on a developer machine that's set up a real key
+    in ``~/.aitap/secrets.yaml`` for the multi-provider eval flow.
+
+    The ``isolated_secrets_home`` fixture (see ``tests/conftest.py``)
+    relocates ``Path.home()`` to a tmp dir and disables the keyring;
+    we still delenv the env var here so all three layers are cleared.
+    """
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     _install_fake_sdk(monkeypatch, _FakeMessage("hi"))
     client = AnthropicClient(model="claude-sonnet-4-6")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import types
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -121,7 +122,16 @@ def test_construction_does_not_touch_network(monkeypatch: pytest.MonkeyPatch) ->
 
 async def test_chat_raises_provider_auth_error_when_key_missing(
     monkeypatch: pytest.MonkeyPatch,
+    isolated_secrets_home: Path,
 ) -> None:
+    """Symmetric to ``test_anthropic_client``'s same-named test. See
+    ``tests/conftest.py:isolated_secrets_home`` for why the HOME-
+    relocation fixture is required: ``secrets.get_key("openai")``
+    consults keyring → fallback file → env var, so deleting only the
+    env var leaves the fallback file path intact and a developer
+    machine with ``profile:openai`` or ``openai:`` set in
+    ``~/.aitap/secrets.yaml`` fails this assertion locally.
+    """
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     _install_fake_sdk(monkeypatch, _FakeCompletion("ok"))
     client = OpenAIClient(model="gpt-4o-mini")

@@ -6,7 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
-_Nothing yet — the next release window starts here. PR entries land under `### Added` / `### Changed` / `### Fixed` etc. before merge (see CLAUDE.md → "Documentation currency — non-negotiable")._
+### Fixed
+
+**Tests — `~/.aitap/secrets.yaml` fallback isolation for the missing-key auth tests**
+- PR #65 (`wt/test-isolation-secrets-fallback`) — pays the follow-up debt PR #59 / #60 / #61 / #62 / #63 each flagged: `test_chat_raises_provider_auth_error_when_key_missing` (in both `tests/unit/test_anthropic_client.py` and `tests/unit/test_openai_client.py`) only `monkeypatch.delenv`'d the env var, but `aitap.secrets.get_key` walks **three** sources in order — OS keyring → `~/.aitap/secrets.yaml` fallback file → env var. On a developer machine that had configured a real key in the fallback file for the multi-provider eval flow, the "missing key" assertion stopped being missing and the test failed locally even though CI's fresh-home environment kept passing. New `tests/conftest.py` exposes one fixture, `isolated_secrets_home`, that relocates `Path.home()` to a fresh `tmp_path` for the test (monkeypatches both `HOME` and `USERPROFILE` so the fixture works across POSIX and Windows) and forces `aitap.secrets._keyring_usable` to return `False`. Tests opt in by naming the fixture in their parameter list — we deliberately do NOT autouse it, so tests that actually want to exercise the real fallback path (e.g. `tests/unit/test_secrets.py` and the integration suite) keep working unchanged. Backend tests: 938 → **939** (same set of tests, but the previously-local-fail now passes on a developer machine with real keys in `~/.aitap/secrets.yaml`). No production-code change, no contract change.
 
 ## [0.1.0a4] — 2026-06-14
 
