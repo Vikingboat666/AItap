@@ -118,12 +118,23 @@ def _default_profile_client_factory(settings: Settings, profile_id: str) -> LLMC
     config is loaded from ``profiles.yaml`` (rather than reading the
     in-process route cache) so the dispatch adapter stays decoupled from
     the routes layer and works in both HTTP and direct-import contexts.
+    Trade-off: if ``save_profiles_to_yaml`` failed during a Settings
+    write (read-only ``.aitap/`` etc.), the in-process ``_PROFILES``
+    cache becomes the source of truth for that session and this
+    function will report the profile as unknown. The
+    ``test_post_run_with_unknown_profile_id_marks_failed_and_records_profile_id``
+    integration test locks down today's behaviour; revisit if real
+    users hit the yaml-save-failed path.
 
     Raises:
         ValueError: with a plain-language message when the profile id
-            is unknown or has no key. The route-side handler turns the
-            terminal-failed run into a 500 and the run row keeps the
-            failed marker; A2-P2 will surface the message in the UI.
+            is unknown or has no key. As shipped in A2-P1 the route
+            handler returns a generic 500 and the run row carries the
+            ``failed`` status; the actionable message lands in server
+            logs and is asserted by tests. A2-P2 catches this exception
+            in the route layer and translates it to an
+            ``HTTPException(detail=...)`` so the UI sees the actionable
+            string verbatim.
     """
     from aitap.config_io import load_profiles_from_yaml
     from aitap.deep.factory import get_client_for_profile_config

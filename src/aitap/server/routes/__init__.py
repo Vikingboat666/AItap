@@ -163,6 +163,11 @@ class RunCreate(_ApiModel):
     # fields are ignored on that branch (but stay required until A2-P3
     # drops them to keep the contract additive). Clients that don't yet
     # know about profiles keep working unchanged.
+    #
+    # Clients sending ``profile_id`` must still include any valid
+    # ``provider`` enum value and a non-empty ``model`` string — they
+    # are ignored by dispatch but pydantic enforces them on the wire
+    # until A2-P3.
     profile_id: str | None = None
     parameters: CallParameters
 
