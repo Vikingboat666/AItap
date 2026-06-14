@@ -123,6 +123,12 @@ async def test_chat_raises_provider_auth_error_when_key_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    # Isolate from the user's global keyring/fallback-file state so the
+    # test passes on a machine that already has a key configured.
+    monkeypatch.setattr(
+        "aitap.deep.openai_client._secrets.get_key",
+        lambda *_args, **_kwargs: None,
+    )
     _install_fake_sdk(monkeypatch, _FakeCompletion("ok"))
     client = OpenAIClient(model="gpt-4o-mini")
     with pytest.raises(ProviderAuthError):
