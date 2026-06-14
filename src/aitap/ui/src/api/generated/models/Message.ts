@@ -10,8 +10,8 @@ import type { TemplateVariable } from './TemplateVariable';
  */
 export type Message = {
     role: Role;
-    template_kind?: TemplateKind;
     template_text: string;
+    template_kind?: TemplateKind;
     variables?: Array<TemplateVariable>;
 };
 

@@ -7,10 +7,10 @@ import type { IterationView } from './IterationView';
  * Aggregated session view: status + all iteration rows.
  */
 export type IterateSessionResponse = {
-    converged_reason?: (string | null);
-    final_version?: (number | null);
-    iterations?: Array<IterationView>;
     session_id: string;
     status: 'running' | 'converged' | 'failed';
+    converged_reason?: (string | null);
+    iterations?: Array<IterationView>;
+    final_version?: (number | null);
 };
 

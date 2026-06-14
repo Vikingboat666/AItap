@@ -332,6 +332,22 @@ def _invoke_runner_safely(
     # independently — we don't try to second-guess what the adapter does.
     try:
         invoke(settings=settings, run_id=run_id, payload=payload)
+    except ValueError as exc:
+        # User-actionable failure (unknown profile id, missing key,
+        # malformed target). The dispatch layer raises ``ValueError``
+        # with a plain-language CLAUDE.md-compliant message — surface it
+        # to the UI via a 422 so the message ("Open Settings to add it,
+        # then re-run.") reaches the user instead of FastAPI's generic
+        # 500 body. Still mark the run failed so the dashboard reflects
+        # the terminal state. A2-P1 promised this translation; A2-P2
+        # delivers it.
+        failover_conn = store_db.connect(settings.db_path)
+        try:
+            store_db.init_db(failover_conn)
+            runs_dao.update_run_status(failover_conn, run_id, status="failed", finished=True)
+        finally:
+            failover_conn.close()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception:
         # Mark the run failed so the UI doesn't show a perpetually-running
         # request when the adapter blows up. Open a fresh connection

@@ -17,12 +17,12 @@ import type { ProviderEvidence } from './ProviderEvidence';
  * after the multi-provider redesign.
  */
 export type SettingsResponse = {
+    provider: Provider;
+    model: string;
+    judge_model: (string | null);
     cost_per_run_usd: number;
     cost_per_session_usd: number;
-    defaults?: Defaults;
-    judge_model: (string | null);
-    model: string;
-    provider: Provider;
     providers_available: Array<ProviderEvidence>;
+    defaults?: Defaults;
 };
 

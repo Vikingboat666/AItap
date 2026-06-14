@@ -12,8 +12,8 @@
  * never the key).
  */
 export type ProfileTestResponse = {
-    detail?: (string | null);
     ok: boolean;
     reason?: ('auth' | 'rate_limit' | 'network' | 'other' | null);
+    detail?: (string | null);
 };
 

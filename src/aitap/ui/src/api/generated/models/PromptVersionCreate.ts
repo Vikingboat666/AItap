@@ -6,8 +6,8 @@ import type { CallParameters } from './CallParameters';
 import type { Message } from './Message';
 export type PromptVersionCreate = {
     messages: Array<Message>;
-    note?: (string | null);
     parameters: CallParameters;
+    note?: (string | null);
     parent_version?: (number | null);
 };
 

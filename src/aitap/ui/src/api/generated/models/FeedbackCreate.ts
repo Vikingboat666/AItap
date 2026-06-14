@@ -4,8 +4,8 @@
 /* eslint-disable */
 export type FeedbackCreate = {
     case_index: number;
-    critique?: (string | null);
-    ideal_answer?: (string | null);
     rating?: (-1 | 0 | 1 | null);
+    ideal_answer?: (string | null);
+    critique?: (string | null);
 };
 

@@ -6,7 +6,7 @@
  * A single test case fed to a prompt or pipeline.
  */
 export type DatasetCase = {
-    expected_at?: (Record<string, any> | null);
     inputs: Record<string, any>;
+    expected_at?: (Record<string, any> | null);
 };
 

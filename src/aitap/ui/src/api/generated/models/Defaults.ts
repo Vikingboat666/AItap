@@ -11,7 +11,7 @@
  * request body for ``PUT /api/settings/defaults``.
  */
 export type Defaults = {
-    judge_profile_id?: (string | null);
     model_profile_id?: (string | null);
+    judge_profile_id?: (string | null);
 };
 

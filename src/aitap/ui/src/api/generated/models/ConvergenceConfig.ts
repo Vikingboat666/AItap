@@ -13,10 +13,10 @@
  * fragile.
  */
 export type ConvergenceConfig = {
-    absolute_threshold?: (number | null);
-    delta_from_baseline?: number;
     max_rounds?: number;
-    stagnation_epsilon?: number;
+    delta_from_baseline?: number;
     stagnation_window?: number;
+    stagnation_epsilon?: number;
+    absolute_threshold?: (number | null);
 };
 

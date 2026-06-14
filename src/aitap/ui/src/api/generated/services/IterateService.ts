@@ -42,37 +42,6 @@ export class IterateService {
         });
     }
     /**
-     * List Iterations For Prompt
-     * Return iterations for *prompt_id*, newest first, capped at *limit*.
-     *
-     * Sorted by ``started_at DESC`` (then id DESC for ties) by the DAO.
-     * Placeholders are filtered so the History UI never shows the
-     * transient round=0 marker.
-     * @returns IterationView Successful Response
-     * @throws ApiError
-     */
-    public static listIterationsForPromptApiIterationsByPromptPromptIdGet({
-        promptId,
-        limit = 50,
-    }: {
-        promptId: string,
-        limit?: number,
-    }): CancelablePromise<Array<IterationView>> {
-        return __request(OpenAPI, {
-            method: 'GET',
-            url: '/api/iterations/by-prompt/{prompt_id}',
-            path: {
-                'prompt_id': promptId,
-            },
-            query: {
-                'limit': limit,
-            },
-            errors: {
-                422: `Validation Error`,
-            },
-        });
-    }
-    /**
      * Get Iterate Session
      * Return the full session state — every iteration row + derived status.
      * @returns IterateSessionResponse Successful Response
@@ -114,6 +83,37 @@ export class IterateService {
             url: '/api/iterations/{session_id}/latest',
             path: {
                 'session_id': sessionId,
+            },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * List Iterations For Prompt
+     * Return iterations for *prompt_id*, newest first, capped at *limit*.
+     *
+     * Sorted by ``started_at DESC`` (then id DESC for ties) by the DAO.
+     * Placeholders are filtered so the History UI never shows the
+     * transient round=0 marker.
+     * @returns IterationView Successful Response
+     * @throws ApiError
+     */
+    public static listIterationsForPromptApiIterationsByPromptPromptIdGet({
+        promptId,
+        limit = 50,
+    }: {
+        promptId: string,
+        limit?: number,
+    }): CancelablePromise<Array<IterationView>> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/iterations/by-prompt/{prompt_id}',
+            path: {
+                'prompt_id': promptId,
+            },
+            query: {
+                'limit': limit,
             },
             errors: {
                 422: `Validation Error`,

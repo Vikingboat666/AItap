@@ -6,7 +6,7 @@
  * A node in the pipeline DAG, referencing a PromptSite by id.
  */
 export type PipelineNode = {
-    label?: (string | null);
     prompt_id: string;
+    label?: (string | null);
 };
 

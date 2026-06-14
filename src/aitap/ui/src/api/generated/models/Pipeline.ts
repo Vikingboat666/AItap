@@ -8,11 +8,11 @@ import type { PipelineNode } from './PipelineNode';
  * A directed acyclic graph of LLM calls connected by data flow.
  */
 export type Pipeline = {
-    edges: Array<PipelineEdge>;
-    entry_points?: Array<string>;
-    exit_points?: Array<string>;
     id: string;
     name: string;
     nodes: Array<PipelineNode>;
+    edges: Array<PipelineEdge>;
+    entry_points?: Array<string>;
+    exit_points?: Array<string>;
 };
 

@@ -10,21 +10,21 @@
  * consumes it without further normalisation.
  */
 export type IterationView = {
-    converged_reason?: ('max_rounds' | 'delta' | 'stagnation' | 'absolute' | 'critic_failed' | null);
-    critique_text?: (string | null);
-    downstream_status?: (Record<string, string> | null);
-    finished_at?: (string | null);
     id: string;
-    is_baseline: boolean;
-    new_version?: (number | null);
-    parent_version?: (number | null);
-    per_dim_scores?: Record<string, number>;
     prompt_id: string;
-    revise_instruction?: (string | null);
-    revise_mode?: ('auto' | 'guided' | 'manual' | 'failed' | null);
     round: number;
     session_id: string;
-    started_at: string;
+    is_baseline: boolean;
+    parent_version?: (number | null);
+    new_version?: (number | null);
+    revise_mode?: ('auto' | 'guided' | 'manual' | 'failed' | null);
+    revise_instruction?: (string | null);
+    critique_text?: (string | null);
     weighted_score: number;
+    per_dim_scores?: Record<string, number>;
+    downstream_status?: (Record<string, string> | null);
+    converged_reason?: ('max_rounds' | 'delta' | 'stagnation' | 'absolute' | 'critic_failed' | null);
+    started_at: string;
+    finished_at?: (string | null);
 };
 

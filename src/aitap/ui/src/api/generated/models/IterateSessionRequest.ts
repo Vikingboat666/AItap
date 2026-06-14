@@ -12,13 +12,13 @@ import type { ConvergenceConfig } from './ConvergenceConfig';
  * Tests substitute via :func:`aitap.playground.dispatch.set_client_factory`.
  */
 export type IterateSessionRequest = {
-    convergence?: (ConvergenceConfig | null);
+    prompt_id: string;
     dataset_id: string;
+    mode?: 'auto' | 'guided' | 'manual';
     instruction?: (string | null);
     manual_revisions?: (Record<string, string> | null);
-    mode?: 'auto' | 'guided' | 'manual';
-    prompt_id: string;
-    user_notes?: (Record<string, Record<string, string>> | null);
     user_thumbs?: (Record<string, Record<string, 'up' | 'down'>> | null);
+    user_notes?: (Record<string, Record<string, string>> | null);
+    convergence?: (ConvergenceConfig | null);
 };
 

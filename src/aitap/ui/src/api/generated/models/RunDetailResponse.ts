@@ -4,14 +4,14 @@
 /* eslint-disable */
 import type { RunOutput } from './RunOutput';
 export type RunDetailResponse = {
-    cost_usd: number;
-    finished_at: (string | null);
-    outputs: Array<RunOutput>;
     run_id: string;
-    started_at: string;
-    status: 'running' | 'done' | 'failed';
-    target_id: string;
     target_kind: 'prompt' | 'pipeline';
+    target_id: string;
     target_version: number;
+    status: 'running' | 'done' | 'failed';
+    outputs: Array<RunOutput>;
+    cost_usd: number;
+    started_at: string;
+    finished_at: (string | null);
 };
 

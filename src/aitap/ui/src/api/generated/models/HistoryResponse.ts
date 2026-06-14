@@ -4,7 +4,7 @@
 /* eslint-disable */
 import type { HistoryEntry } from './HistoryEntry';
 export type HistoryResponse = {
-    entries: Array<HistoryEntry>;
     prompt_id: string;
+    entries: Array<HistoryEntry>;
 };
 
