@@ -53,7 +53,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from aitap import secrets as _secrets
-from aitap.deep import client as client_module
 from aitap.deep.client import ChatResponse
 from aitap.playground.pipeline_runner import (
     PipelineRunResult,
@@ -95,35 +94,13 @@ class ProfileDispatchError(ValueError):
     """
 
 
-# Signature mirrors :func:`aitap.deep.client.get_client` so the default
-# wiring is a straight pass-through and tests can substitute a callable
-# that returns a MockLLMClient without monkey-patching the deep package.
-ClientFactory = Callable[[str, str], "LLMClient"]
 # Signature for the multi-provider profile path. Receives the request's
 # Settings (for ``profiles.yaml`` resolution) and the requested profile
-# id; returns a built LLMClient. Kept parallel to ``ClientFactory`` so
-# each dispatch branch has its own test seam.
+# id; returns a built LLMClient. After contract v4 (A2-P3) this is the
+# *only* dispatch factory — the legacy provider-keyed
+# ``ClientFactory`` / ``_default_client_factory`` / ``set_client_factory``
+# was deleted along with ``RunCreate.provider`` / ``RunCreate.model``.
 ProfileClientFactory = Callable[["Settings", str], "LLMClient"]
-
-
-def _default_client_factory(provider: str, model: str) -> LLMClient:
-    """Default factory: defer to :func:`aitap.deep.client.get_client`.
-
-    We pull the API key from :mod:`aitap.secrets` (which itself falls
-    back to env vars) and hand it to the SDK constructor directly. This
-    is the *only* dispatch-layer call to ``secrets.get_key`` — see the
-    allow-list in ``tests/unit/test_secrets_import_discipline.py``.
-
-    Tests that want to bypass the vault should override this whole
-    factory via :func:`set_client_factory` and inject a mock client.
-    """
-    api_key: str | None = None
-    if provider in ("anthropic", "openai"):
-        # The narrow Literal cast is intentional — we already gated on
-        # provider being a vault-supported name, and the secrets module
-        # validates again at runtime.
-        api_key = _secrets.get_key(provider)  # type: ignore[arg-type]
-    return client_module.get_client(provider, model, api_key=api_key)
 
 
 def _default_profile_client_factory(settings: Settings, profile_id: str) -> LLMClient:
@@ -170,31 +147,20 @@ def _default_profile_client_factory(settings: Settings, profile_id: str) -> LLMC
     return get_client_for_profile_config(profile, api_key)
 
 
-# Mutable on purpose: the tests' set_client_factory swap. Kept lower-case so
-# the constant-redefinition rule doesn't flag us; the docstring on the setter
-# is the source of truth for "treat this as private state, not a constant."
-_client_factory: ClientFactory = _default_client_factory
+# Mutable on purpose: the tests' set_profile_client_factory swap. Kept
+# lower-case so the constant-redefinition rule doesn't flag us; the
+# docstring on the setter is the source of truth for "treat this as
+# private state, not a constant."
 _profile_client_factory: ProfileClientFactory = _default_profile_client_factory
 
 
-def set_client_factory(factory: ClientFactory | None) -> None:
+def set_profile_client_factory(factory: ProfileClientFactory | None) -> None:
     """Install (or reset) the LLMClient factory used by :func:`invoke_run`.
 
-    Passing ``None`` restores the production default. This is the
-    designated test seam — pytest fixtures should ``yield`` then call
-    ``set_client_factory(None)`` to avoid bleeding mocks across tests.
-    """
-    global _client_factory
-    _client_factory = factory if factory is not None else _default_client_factory
-
-
-def set_profile_client_factory(factory: ProfileClientFactory | None) -> None:
-    """Install (or reset) the *profile-path* LLMClient factory.
-
-    Parallel to :func:`set_client_factory` — the profile branch of
-    :func:`_dispatch` runs through this seam when
-    ``payload.profile_id`` is set, so a test can inject a MockLLMClient
-    without seeding ``profiles.yaml`` or the secrets vault. Passing
+    This is the *only* test seam after contract v4 (A2-P3). A test
+    fixture installs a callable that returns a ``MockLLMClient``,
+    yields, then calls ``set_profile_client_factory(None)`` to restore
+    the production wiring. Passing
     ``None`` restores the production default.
     """
     global _profile_client_factory
@@ -290,16 +256,12 @@ def _dispatch(
     roll-up.
     """
     cases = _resolve_cases(settings, payload)
-    # Multi-provider profile dispatch (A2-P1). When the payload carries a
-    # ``profile_id`` we route through the profile-path factory; otherwise
-    # we keep the legacy provider/model dispatch byte-for-byte so existing
-    # clients (Playground UI pre-A2-P2, deep scanner-side callers, every
-    # unit test that builds a RunCreate the old way) keep their current
-    # behaviour. A2-P3 removes the else-branch when the contract bumps.
-    if payload.profile_id is not None:
-        client = _profile_client_factory(settings, payload.profile_id)
-    else:
-        client = _client_factory(payload.provider.value, payload.model)
+    # Multi-provider profile dispatch — the only path after contract v4
+    # (A2-P3). ``payload.profile_id`` is required by pydantic on the
+    # wire; the factory raises ``ProfileDispatchError`` for unknown id
+    # or missing key, and the route layer translates that into 422 with
+    # the plain-language detail (CLAUDE.md).
+    client = _profile_client_factory(settings, payload.profile_id)
 
     if payload.target_kind == "prompt":
         site = _load_prompt_site(conn, payload.target_id)
@@ -461,12 +423,10 @@ def _row_payload(row: sqlite3.Row) -> str:
 
 
 __all__ = [
-    "ClientFactory",
     "ProfileClientFactory",
     "ProfileDispatchError",
     "invoke_run",
     "outputs_sidecar_path",
-    "set_client_factory",
     "set_profile_client_factory",
     "write_outputs_sidecar",
 ]

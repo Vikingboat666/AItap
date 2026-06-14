@@ -1,24 +1,21 @@
 """LLMClient contract.
 
-Contract version: 1 (2026-05-09)
-
-Provider-agnostic abstraction shared by:
-
-- L2 deep scanner (`deep/wrapper_detector.py`, `cross_file_resolver.py`,
-  `purpose_inferer.py`)
-- Test case expansion (`dataset/llm_expander.py`)
-- LLM-as-judge (`iterate/judge.py`)
-- Critique-and-revise (`iterate/critic.py`)
-
-Each concrete provider lives next to this file (e.g., `anthropic_client.py`)
-and registers itself via `register_provider()`. Lazy imports keep the SDK
-deps optional — installing aitap without `[anthropic]` extra still works
-as long as you don't try to use Anthropic.
+Contract version: 2 (2026-06-14) — A2-P3 deleted the legacy provider-keyed
+registry (``ClientFactory`` / ``_REGISTRY`` / ``register_provider`` /
+``get_client`` / ``list_providers``) along with
+``RunCreate.provider`` / ``RunCreate.model``. The only remaining public
+surface here is the :class:`LLMClient` ABC plus its message / response /
+error types — concrete clients are constructed via
+:mod:`aitap.deep.factory` keyed on
+:class:`~aitap.config.ProfileConfig` (or its API-layer twin
+:class:`~aitap.server.routes.Profile`). See ``docs/profiles-design.md``
+for the redesign rationale.
 
 Example consumer:
 
-    from aitap.deep.client import get_client
-    client = get_client(provider="anthropic", model="claude-sonnet-4-6")
+    from aitap.deep.factory import get_client_for_profile_config
+    from aitap.secrets import get_key_for_profile
+    client = get_client_for_profile_config(profile, get_key_for_profile(profile.id))
     estimate = client.estimate_cost([{"role": "user", "content": "hi"}])
     if estimate.usd > 0.05:
         confirm_with_user(estimate)
@@ -28,8 +25,7 @@ Example consumer:
 from __future__ import annotations
 
 import abc
-from collections.abc import Callable
-from typing import Literal, Protocol
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -127,52 +123,10 @@ class ProviderRateLimitError(ProviderError):
     """Provider returned 429 / rate limit."""
 
 
-# ----- Provider registry -----
-
-ClientFactory = Callable[[str, str | None], LLMClient]
-
-
-class _ProviderProtocol(Protocol):  # pyright: ignore[reportUnusedClass]
-    """Marker protocol — kept here so tests can introspect the registry."""
-
-    def __call__(self, model: str, api_key: str | None) -> LLMClient: ...
-
-
-_REGISTRY: dict[str, ClientFactory] = {}
-
-
-def register_provider(name: str, factory: ClientFactory) -> None:
-    """Register a provider factory under a canonical name.
-
-    Concrete provider modules call this at import time, e.g.:
-
-        # in aitap/deep/anthropic_client.py
-        register_provider("anthropic", lambda model, key: AnthropicClient(model, key))
-    """
-    _REGISTRY[name] = factory
-
-
-def list_providers() -> list[str]:
-    return sorted(_REGISTRY)
-
-
-def get_client(provider: str, model: str, api_key: str | None = None) -> LLMClient:
-    """Get an LLMClient for the named provider.
-
-    Triggers a lazy import of the provider module if not yet registered.
-    """
-    if provider not in _REGISTRY:
-        # Lazy import to populate the registry on first request.
-        # Each provider module registers itself at import time.
-        try:
-            __import__(f"aitap.deep.{provider}_client")
-        except ImportError as e:
-            raise ProviderError(
-                f"Provider '{provider}' not available. "
-                f"Install with: pip install 'aitap[{provider}]'"
-            ) from e
-
-    if provider not in _REGISTRY:
-        raise ProviderError(f"Provider '{provider}' did not register itself on import")
-
-    return _REGISTRY[provider](model, api_key)
+# The legacy provider-keyed registry (``ClientFactory`` / ``_REGISTRY`` /
+# ``register_provider`` / ``list_providers`` / ``get_client``) was
+# removed in contract v2 (A2-P3). Concrete clients are now constructed
+# via :mod:`aitap.deep.factory` keyed on
+# :class:`~aitap.config.ProfileConfig`; new callers should use
+# :func:`~aitap.deep.factory.get_client_for_profile_config` (or the
+# API-twin :func:`~aitap.deep.factory.get_client_for_profile`).

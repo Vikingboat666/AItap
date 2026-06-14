@@ -9,7 +9,8 @@ import type { ConvergenceConfig } from './ConvergenceConfig';
  * ``provider`` / ``model`` selection is intentionally absent — the
  * background task constructs an :class:`LLMClient` via the same
  * factory the playground uses, which already reads project Settings.
- * Tests substitute via :func:`aitap.playground.dispatch.set_client_factory`.
+ * Tests substitute via
+ * :func:`aitap.playground.dispatch.set_profile_client_factory`.
  */
 export type IterateSessionRequest = {
     prompt_id: string;

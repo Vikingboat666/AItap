@@ -49,19 +49,20 @@ def project(tmp_path: Path) -> Settings:
 
 @pytest.fixture()
 def mock_client_factory() -> Iterator[MockLLMClient]:
-    """Install a MockLLMClient as the dispatch adapter's factory.
+    """Install a MockLLMClient on the profile-path seam.
 
-    The yielded instance is the *first* one constructed — subsequent
-    construction inside ``invoke_run`` returns the same one so tests can
-    inspect its ``calls`` list after the fact. ``set_client_factory(None)``
-    restores the production wiring on teardown so the suite stays clean.
+    After A2-P3 (contract v4) every dispatch flows through
+    ``set_profile_client_factory``; this fixture installs the mock
+    there. The fixture name stays ``mock_client_factory`` so the
+    existing per-test assertions read unchanged — the only structural
+    move is the seam it targets.
     """
     mock = MockLLMClient(model="mock-model", scripted=["mocked reply"])
-    dispatch.set_client_factory(lambda provider, model: mock)
+    dispatch.set_profile_client_factory(lambda settings, profile_id: mock)
     try:
         yield mock
     finally:
-        dispatch.set_client_factory(None)
+        dispatch.set_profile_client_factory(None)
 
 
 def _open_conn(project: Settings) -> sqlite3.Connection:
@@ -133,8 +134,7 @@ def _seed_run_row(project: Settings, run_id: str, target_id: str) -> None:
             target_kind="prompt",
             target_id=target_id,
             target_version=1,
-            provider="anthropic",
-            model="mock-model",
+            profile_id="prof-mock",
             parameters_json="{}",
         )
     finally:
@@ -146,14 +146,14 @@ def _build_payload(
     target_kind: str = "prompt",
     target_id: str = "prompt-x",
     cases: list[DatasetCase] | None = None,
+    profile_id: str = "prof-mock",
 ) -> RunCreate:
     return RunCreate(
         target_kind=target_kind,  # type: ignore[arg-type]
         target_id=target_id,
         target_version=1,
         cases=cases or [],
-        provider=Provider.ANTHROPIC,
-        model="mock-model",
+        profile_id=profile_id,
         parameters=CallParameters(temperature=0.0),
     )
 
@@ -252,8 +252,7 @@ def test_invoke_run_loads_cases_from_dataset_sidecar(
         target_version=1,
         cases=[],
         dataset_id="my-cases",
-        provider=Provider.ANTHROPIC,
-        model="mock-model",
+        profile_id="prof-mock",
         parameters=CallParameters(temperature=0.0),
     )
     dispatch.invoke_run(settings=project, run_id=run_id, payload=payload)
@@ -312,8 +311,7 @@ def test_invoke_run_pipeline_end_to_end(
             target_kind="pipeline",
             target_id=pipeline.id,
             target_version=1,
-            provider="anthropic",
-            model="mock-model",
+            profile_id="prof-mock",
             parameters_json="{}",
         )
     finally:
@@ -386,8 +384,7 @@ def _seed_pipeline_run_row(project: Settings, run_id: str, pipeline_id: str) -> 
             target_kind="pipeline",
             target_id=pipeline_id,
             target_version=1,
-            provider="anthropic",
-            model="mock-model",
+            profile_id="prof-mock",
             parameters_json="{}",
         )
     finally:
@@ -406,8 +403,7 @@ def _pipeline_payload(
         target_id=pipeline_id,
         target_version=1,
         cases=[DatasetCase(inputs={"value": "seed"})],
-        provider=Provider.ANTHROPIC,
-        model="mock-model",
+        profile_id="prof-mock",
         parameters=CallParameters(temperature=0.0),
         pipeline_mode=mode,  # type: ignore[arg-type]
         pipeline_node_id=node_id,
@@ -588,8 +584,18 @@ def test_dispatch_node_mode_runs_only_one_node(
     assert records[0]["intermediate"] is None
 
 
-def test_invoke_run_unknown_prompt_marks_failed(project: Settings) -> None:
-    """A missing target prompt flips the run to ``failed`` and re-raises."""
+def test_invoke_run_unknown_prompt_marks_failed(
+    project: Settings,
+    mock_client_factory: MockLLMClient,
+) -> None:
+    """A missing target prompt flips the run to ``failed`` and re-raises.
+
+    Uses the ``mock_client_factory`` seam so the profile path resolves
+    cleanly; the failure under test is the prompt-not-found ValueError
+    that the dispatch raises after the client is built but before the
+    runner runs.
+    """
+    _ = mock_client_factory  # the seam is installed for its side effect
     run_id = "test-run-missing"
     _seed_run_row(project, run_id, "no-such-prompt")
     payload = _build_payload(target_id="no-such-prompt", cases=[])
@@ -607,110 +613,9 @@ def test_invoke_run_unknown_prompt_marks_failed(project: Settings) -> None:
     assert row["finished_at"] is not None
 
 
-def test_set_client_factory_none_restores_default() -> None:
-    """Calling ``set_client_factory(None)`` reverts to the production factory."""
-    sentinel = object()
-    dispatch.set_client_factory(lambda provider, model: sentinel)  # type: ignore[arg-type,return-value]
-    assert dispatch._client_factory("anthropic", "claude-sonnet-4-6") is sentinel
-    dispatch.set_client_factory(None)
-    # The default factory is the module-level function — not the sentinel.
-    assert dispatch._client_factory is dispatch._default_client_factory
-
-
 # ---------------------------------------------------------------------------
-# Profile-path dispatch (A2-P1)
+# Profile-path dispatch — the only path after contract v4 (A2-P3)
 # ---------------------------------------------------------------------------
-
-
-def test_invoke_run_with_profile_id_routes_through_profile_factory(
-    project: Settings,
-) -> None:
-    """Setting ``payload.profile_id`` invokes the profile-path seam.
-
-    The legacy ``_client_factory`` must not be called for this branch —
-    the seam separation is the whole point of A2-P1 (parallel paths
-    until A2-P3 removes the legacy one).
-    """
-    site = _prompt_site()
-    _seed_prompt_row(project, site)
-    run_id = "test-run-profile"
-    _seed_run_row(project, run_id, site.id)
-
-    legacy_calls: list[tuple[str, str]] = []
-    dispatch.set_client_factory(
-        lambda provider, model: (legacy_calls.append((provider, model)), MockLLMClient())[1]
-    )
-    profile_mock = MockLLMClient(model="mock-model", scripted=["profile-reply"])
-    profile_calls: list[tuple[Settings, str]] = []
-
-    def _profile_factory(settings: Settings, profile_id: str) -> MockLLMClient:
-        profile_calls.append((settings, profile_id))
-        return profile_mock
-
-    dispatch.set_profile_client_factory(_profile_factory)  # type: ignore[arg-type]
-    try:
-        payload = RunCreate(
-            target_kind="prompt",
-            target_id=site.id,
-            target_version=1,
-            cases=[DatasetCase(inputs={"value": "ping"})],
-            provider=Provider.ANTHROPIC,
-            model="legacy-ignored",
-            profile_id="my-profile",
-            parameters=CallParameters(temperature=0.0),
-        )
-        dispatch.invoke_run(settings=project, run_id=run_id, payload=payload)
-    finally:
-        dispatch.set_client_factory(None)
-        dispatch.set_profile_client_factory(None)
-
-    assert legacy_calls == []
-    assert profile_calls == [(project, "my-profile")]
-    assert len(profile_mock.calls) == 1
-
-    conn = _open_conn(project)
-    try:
-        row = runs_dao.read_run(conn, run_id)
-    finally:
-        conn.close()
-    assert row is not None
-    assert row["status"] == "done"
-
-
-def test_invoke_run_legacy_path_unchanged_when_profile_id_is_none(
-    project: Settings,
-    mock_client_factory: MockLLMClient,
-) -> None:
-    """``profile_id=None`` keeps the legacy provider/model dispatch intact.
-
-    A2-P1 is additive: every existing client that builds a RunCreate
-    without ``profile_id`` should behave byte-for-byte the way it did
-    before. The profile factory must stay untouched on this path.
-    """
-    site = _prompt_site()
-    _seed_prompt_row(project, site)
-    run_id = "test-run-legacy"
-    _seed_run_row(project, run_id, site.id)
-
-    profile_calls: list[tuple[Settings, str]] = []
-    dispatch.set_profile_client_factory(
-        lambda settings, profile_id: (
-            profile_calls.append((settings, profile_id)),
-            MockLLMClient(),
-        )[1]
-    )
-    try:
-        payload = _build_payload(
-            target_id=site.id,
-            cases=[DatasetCase(inputs={"value": "legacy"})],
-        )
-        assert payload.profile_id is None
-        dispatch.invoke_run(settings=project, run_id=run_id, payload=payload)
-    finally:
-        dispatch.set_profile_client_factory(None)
-
-    assert profile_calls == []
-    assert len(mock_client_factory.calls) == 1
 
 
 def test_invoke_run_unknown_profile_marks_failed(project: Settings) -> None:
@@ -719,8 +624,8 @@ def test_invoke_run_unknown_profile_marks_failed(project: Settings) -> None:
     Uses the default factory (no test seam) so we cover the real
     ``load_profiles_from_yaml`` lookup path: no ``profiles.yaml`` exists
     under ``tmp_path``, so the lookup returns an empty list and the
-    factory raises a plain-language ``ValueError`` naming the next
-    action.
+    factory raises a plain-language ``ProfileDispatchError`` naming the
+    next action.
     """
     site = _prompt_site()
     _seed_prompt_row(project, site)
@@ -732,12 +637,10 @@ def test_invoke_run_unknown_profile_marks_failed(project: Settings) -> None:
         target_id=site.id,
         target_version=1,
         cases=[],
-        provider=Provider.ANTHROPIC,
-        model="legacy-ignored",
         profile_id="not-configured",
         parameters=CallParameters(temperature=0.0),
     )
-    with pytest.raises(ValueError, match="No profile with id 'not-configured'"):
+    with pytest.raises(dispatch.ProfileDispatchError, match="No profile with id 'not-configured'"):
         dispatch.invoke_run(settings=project, run_id=run_id, payload=payload)
 
     conn = _open_conn(project)
@@ -749,17 +652,14 @@ def test_invoke_run_unknown_profile_marks_failed(project: Settings) -> None:
     assert row["status"] == "failed"
 
 
-def test_set_profile_client_factory_none_restores_default() -> None:
-    """Symmetry with ``set_client_factory(None)`` — restores the production seam."""
+def test_set_profile_client_factory_none_restores_default(project: Settings) -> None:
+    """``set_profile_client_factory(None)`` restores the production seam."""
     sentinel = object()
     dispatch.set_profile_client_factory(
         lambda settings, profile_id: sentinel  # type: ignore[return-value]
     )
     # The sentinel surfaces unchanged through the seam.
-    from aitap.config import Settings as _Settings
-
-    fake = _Settings(project_root=Path("."))
-    assert dispatch._profile_client_factory(fake, "x") is sentinel
+    assert dispatch._profile_client_factory(project, "x") is sentinel
     dispatch.set_profile_client_factory(None)
     assert dispatch._profile_client_factory is dispatch._default_profile_client_factory
 

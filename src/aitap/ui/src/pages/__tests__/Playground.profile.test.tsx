@@ -111,25 +111,31 @@ describe("Playground — multi-provider profile picker (A2-P2)", () => {
     expect(captured.body!.profile_id).toBe("prof_default");
   });
 
-  it("switching to 'use legacy' posts profile_id: null", async () => {
-    const captured = installRunCapture();
+  it("disables Run when no profile is selected (empty-profiles case)", async () => {
+    // After contract v4 (A2-P3) the legacy provider/model fallback is
+    // gone — the picker is required. When no profile is configured the
+    // picker shows the empty-state text and the Run button stays
+    // disabled (no dangling profile_id on the wire).
+    installRunCapture();
+    server.use(
+      http.get("/api/profiles", () => HttpResponse.json([])),
+      http.get("/api/settings", () =>
+        HttpResponse.json({
+          ...settingsFixture,
+          defaults: { model_profile_id: null, judge_profile_id: null },
+        }),
+      ),
+    );
     renderWithProviders(<Playground />, {
       route: "/playground/pipeline/pl_test_one",
       path: "/playground/:targetKind/:targetId",
     });
 
-    const select = (await screen.findByLabelText(/use profile/i)) as HTMLSelectElement;
-    await waitFor(() => expect(select.value).toBe("prof_default"));
-    await userEvent.selectOptions(select, "");
-    expect(select.value).toBe("");
-
-    await switchToEndToEndAndRun();
-    await waitFor(() => expect(captured.body).not.toBeNull());
-    expect(captured.body!.profile_id).toBeNull();
-    // Legacy fallback still rides on the wire so the backend has the
-    // provider/model to dispatch with.
-    expect(captured.body!.provider).toBeDefined();
-    expect(captured.body!.model).toBeDefined();
+    await screen.findByText(/Open Settings to add one/i);
+    // Switch to end-to-end so the only remaining gate is the missing
+    // profile. The Run button must still be disabled.
+    await userEvent.click(screen.getByRole("button", { name: /^end-to-end$/i }));
+    expect(screen.getByRole("button", { name: /^run$/i })).toBeDisabled();
   });
 
   it("seeds the picker on a later refetch when the first /api/profiles response is empty", async () => {
@@ -177,11 +183,13 @@ describe("Playground — multi-provider profile picker (A2-P2)", () => {
     await waitFor(() => expect(select.value).toBe("prof_default"));
   });
 
-  it("falls back to legacy when the picked profile disappears from a later refetch", async () => {
+  it("disables Run when the picked profile disappears from a later refetch", async () => {
     // Regression test for the tech-review-caught race: user picks a
     // profile, it's deleted in another tab, refetch returns a list
     // that no longer contains it. The React state must reconcile to
-    // ``null`` so the wire stops sending the dangling id.
+    // ``null`` so the wire stops sending the dangling id — *and* Run
+    // must disable so the user can't accidentally submit a payload
+    // whose backend would 422.
     installRunCapture();
     let callCount = 0;
     server.use(
@@ -214,19 +222,26 @@ describe("Playground — multi-provider profile picker (A2-P2)", () => {
     const select = (await screen.findByLabelText(/use profile/i)) as HTMLSelectElement;
     await waitFor(() => expect(select.value).toBe("prof_default"));
 
+    // Switch to end-to-end so the profile gate is the only remaining
+    // gate on Run — masking it behind pipeline-selection would hide
+    // the regression.
+    await userEvent.click(screen.getByRole("button", { name: /^end-to-end$/i }));
+    expect(screen.getByRole("button", { name: /^run$/i })).toBeEnabled();
+
     // Profile goes away.
     await queryClient.invalidateQueries({ queryKey: ["profiles"] });
 
-    // Picker collapses to the empty-state (no profiles), and the
-    // React state behind the wire is back on legacy.
+    // Picker collapses to the empty-state and Run disables — the
+    // reconciliation effect must drop ``profileId`` back to ``null``.
     await screen.findByText(/Open Settings to add one/i);
+    expect(screen.getByRole("button", { name: /^run$/i })).toBeDisabled();
   });
 
   it("renders the plain-language empty state when no profiles exist", async () => {
     server.use(
       http.get("/api/profiles", () => HttpResponse.json([])),
-      // No configured default — seeding logic should leave the picker on
-      // the legacy fallback.
+      // No configured default — seeding logic should leave the picker
+      // unset (which keeps Run disabled).
       http.get("/api/settings", () =>
         HttpResponse.json({
           ...settingsFixture,

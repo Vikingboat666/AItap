@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -80,12 +80,43 @@ DATASET_ID = "iter-cases"
 
 
 @pytest.fixture()
-def settings(tmp_path: Path) -> Settings:
-    """Throwaway Settings rooted at tmp_path with .aitap pre-created."""
+def settings(tmp_path: Path, request: pytest.FixtureRequest) -> Settings:
+    """Throwaway Settings rooted at tmp_path with .aitap pre-created.
+
+    After contract v4 (A2-P3) the iterate background task dispatches
+    via a profile. We default to pinning ``prof-iterate`` so existing
+    tests don't have to set it up themselves; a test that needs to
+    cover the "no default profile" path applies the
+    ``@pytest.mark.no_default_profile`` marker and gets the unconfigured
+    state.
+    """
     aitap_dir = tmp_path / ".aitap"
     for child in ("prompts", "pipelines", "datasets", "runs"):
         (aitap_dir / child).mkdir(parents=True, exist_ok=True)
-    return Settings(project_root=tmp_path)
+    settings = Settings(project_root=tmp_path)
+    if request.node.get_closest_marker("no_default_profile") is None:
+        settings.defaults.model_profile_id = "prof-iterate"
+    return settings
+
+
+@pytest.fixture(autouse=True)
+def _mock_iterate_client() -> Iterator[None]:
+    """Install a profile-path MockLLMClient seam for the iterate test run.
+
+    The iterate route's background task calls
+    ``_profile_client_factory(settings, settings.defaults.model_profile_id)``
+    after A2-P3; without this fixture every test would hit the real
+    ``load_profiles_from_yaml`` path and fail with
+    ``ProfileDispatchError``. Tests that exercise the negative path
+    (route-layer 422 pre-check) still benefit from this seam — the
+    route's pre-check fires first, so the background task never runs.
+    """
+    from aitap.deep.testing import MockLLMClient
+    from aitap.playground import dispatch as playground_dispatch
+
+    playground_dispatch.set_profile_client_factory(lambda settings, profile_id: MockLLMClient())
+    yield
+    playground_dispatch.set_profile_client_factory(None)
 
 
 @pytest.fixture()
@@ -417,6 +448,27 @@ async def test_post_iterate_400_when_manual_mode_without_revisions(
     )
     assert resp.status_code == 400, resp.text
     assert "manual_revisions" in resp.json()["detail"].lower()
+
+
+@pytest.mark.no_default_profile
+async def test_post_iterate_422_when_no_default_profile_configured(
+    client: AsyncClient,
+    settings: Settings,
+) -> None:
+    """No default profile ⇒ 422 with plain-language detail (CLAUDE.md).
+
+    Pre-A2-P3 this case landed in the background task and surfaced as a
+    generic ``critic_failed`` sentinel — the actionable message ("Open
+    Settings, pick a default profile, then re-run") was eaten by the
+    bare-Exception catch. The route-layer pre-check (added in tech
+    review of A2-P3) makes the message reach the UI verbatim.
+    """
+    _seed_prompt(settings)
+    resp = await client.post("/api/iterate", json=_payload(mode="auto"))
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"]
+    assert "default model profile" in detail
+    assert "Open Settings" in detail
 
 
 # ---------------------------------------------------------------------------

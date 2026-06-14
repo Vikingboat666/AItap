@@ -60,11 +60,11 @@ def insert_run(
     target_kind: TargetKind,
     target_id: str,
     target_version: int,
-    provider: str,
-    model: str,
     parameters_json: str,
     dataset_id: str | None = None,
     profile_id: str | None = None,
+    provider: str = "",
+    model: str = "",
     status: RunStatus = "running",
     cost_usd: float = 0.0,
     git_commit: str | None = None,
@@ -77,9 +77,26 @@ def insert_run(
     text to avoid widening the schema every time we add a new parameter.
 
     ``profile_id`` records which multi-provider profile a run was
-    dispatched against (schema v3 column, nullable). ``None`` means the
-    legacy ``provider`` + ``model`` dispatch was used; once A2-P3 drops
-    the legacy path this column becomes the single source of truth.
+    dispatched against (schema v3 column). After contract v4 (A2-P3)
+    this is the **single source of truth for which client served a
+    run**. ``provider`` + ``model`` remain on the DDL with ``NOT NULL``
+    constraints so legacy rows persisted under contract v3 / v2 still
+    read back, but they have a tri-state semantics that callers need
+    to handle:
+
+    - Pre-v3 historical rows (and rows the iterate loop writes today):
+      meaningful ``provider`` + ``model`` enum-shaped strings,
+      ``profile_id = NULL``.
+    - Contract v4 ``POST /api/runs`` rows: ``provider = ""``,
+      ``model = ""``, ``profile_id`` set.
+
+    **Readers that want the resolved provider/model must look it up
+    via ``profile_id``** (e.g., ``aitap.config_io.load_profiles_from_yaml``
+    → ``ProfileConfig.protocol`` / ``.model_id``). Treating
+    ``row["provider"]`` as a non-empty enum will silently get ``""``
+    for v4-dispatched rows. A follow-up worktree can drop the
+    ``NOT NULL`` constraint via ``ALTER TABLE`` once the read-paths
+    are audited.
     """
     conn.execute(
         """

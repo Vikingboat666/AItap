@@ -180,11 +180,11 @@ def mock_runner_client() -> Iterator[MockLLMClient]:
         model="mock-runner",
         scripted=["runner-output"] * 200,
     )
-    dispatch.set_client_factory(lambda provider, model: runner)
+    dispatch.set_profile_client_factory(lambda settings, profile_id: runner)
     try:
         yield runner
     finally:
-        dispatch.set_client_factory(None)
+        dispatch.set_profile_client_factory(None)
 
 
 # --------------------------------------------------------------------------- #
@@ -759,7 +759,7 @@ async def test_iterate_loop_does_not_call_llm_inside_transaction(
 
     monkeypatch.setattr("aitap.iterate.loop.transaction", spy_transaction)
 
-    dispatch.set_client_factory(lambda provider, model: runner)
+    dispatch.set_profile_client_factory(lambda settings, profile_id: runner)
     try:
         await iterate_loop(
             settings=project,
@@ -771,7 +771,7 @@ async def test_iterate_loop_does_not_call_llm_inside_transaction(
             convergence=ConvergenceConfig(max_rounds=2, delta_from_baseline=0.10),
         )
     finally:
-        dispatch.set_client_factory(None)
+        dispatch.set_profile_client_factory(None)
 
     assert llm_inside == [], f"LLM calls inside transaction: {llm_inside}"
 

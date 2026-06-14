@@ -155,33 +155,29 @@ def _run_l2(
     --deep) doesn't pay the import cost. Failures are surfaced as warnings
     on stderr and the original result flows through.
 
-    Dispatch order:
+    Dispatch (after contract v4 / A2-P3): profile-only. If *profile_id*
+    is set, or ``settings.defaults.model_profile_id`` is set, or the
+    project has exactly one configured profile, resolve a
+    :class:`~aitap.config.ProfileConfig` and build the client via
+    :func:`aitap.deep.factory.get_client_for_profile_config`. This
+    routes through the OpenAI-compatible / Anthropic-protocol client
+    family that PR #40 shipped — DeepSeek / Moonshot / Groq / Together
+    / Qwen / SiliconFlow / Ollama / LM Studio all work natively.
+    Otherwise the deep pass is skipped and the L1 result flows through.
 
-    1. **Profile path** (preferred). If *profile_id* is set, or
-       ``settings.defaults.model_profile_id`` is set, or the project has
-       exactly one configured profile, resolve a
-       :class:`~aitap.config.ProfileConfig` and build the client via
-       :func:`aitap.deep.factory.get_client_for_profile_config`. This
-       routes through the new OpenAI-compatible / Anthropic-protocol
-       client family that PR #40 shipped, so DeepSeek / Moonshot / Groq
-       / Together / Qwen / SiliconFlow / Ollama / LM Studio all work
-       natively without the PR #58 ``ANTHROPIC_BASE_URL`` env var
-       workaround.
-    2. **Legacy path** (fallback). Use ``settings.provider.name`` +
-       ``settings.provider.model`` + ``secrets.get_key`` — the
-       pre-redesign route still valid for projects that haven't
-       migrated to profiles. PR #58's env var override remains the
-       documented workaround for non-OpenAI / non-Anthropic vendors on
-       this path.
+    The legacy ``settings.provider`` / ``settings.provider.model`` /
+    ``secrets.get_key`` fallback was removed in A2-P3 alongside the
+    legacy ``RunCreate.provider`` / ``RunCreate.model`` and the
+    ``register_provider`` / ``OpenAIClient`` / ``get_client`` registry.
 
     An explicit ``--profile`` that doesn't resolve fails loudly (no
     silent fallback): "you asked for X, X isn't configured" is more
-    helpful than a stack trace deep in the legacy path.
+    helpful than a stack trace.
     """
     from aitap.config import Settings
 
     try:
-        from aitap.deep.client import ProviderError, get_client
+        from aitap.deep.client import ProviderError
         from aitap.deep.orchestrator import L2CostEstimate, enrich_with_l2
     except ImportError as exc:
         if not json_mode:
@@ -242,64 +238,21 @@ def _run_l2(
         )
         return result
 
-    # --- Legacy path ------------------------------------------------------
-
-    # Plain-language pre-check before paying the SDK construction cost.
-    # If the resolved provider has no key configured anywhere (vault,
-    # fallback file, env var), the L2 pass would fail at the first
-    # chat() call with a stack trace. Bail with one actionable sentence
-    # instead — see CLAUDE.md "Plain-language UI copy".
-    if settings.provider.name in ("anthropic", "openai"):
-        from aitap import secrets as secrets_module
-
-        key_status = secrets_module.key_status(settings.provider.name)  # type: ignore[arg-type]
-        if not key_status.configured:
-            if not json_mode:
-                # ``.title()`` produces "Openai" — reads like a typo. Use a
-                # tiny display map so the CLI message matches how each
-                # provider canonically capitalises its name.
-                pretty = {
-                    "anthropic": "Anthropic",
-                    "openai": "OpenAI",
-                }.get(settings.provider.name, settings.provider.name)
-                article = "an" if pretty[0].lower() in "aeiou" else "a"
-                env_var = (
-                    "ANTHROPIC_API_KEY"
-                    if settings.provider.name == "anthropic"
-                    else "OPENAI_API_KEY"
-                )
-                typer.secho(
-                    f"--deep needs {article} {pretty} key, but none is set. "
-                    f"Add one in `aitap ui -> Settings`, or export {env_var} "
-                    "in your shell. Skipping the deep pass and returning L1 results.",
-                    fg=typer.colors.YELLOW,
-                    err=True,
-                )
-            return result
-
-    try:
-        client = get_client(
-            settings.provider.name,
-            settings.provider.model,
+    # No profile resolved — A2-P3 (contract v4) removed the legacy
+    # provider-keyed fallback that lived here. Tell the user the next
+    # action and return the L1 result so the rest of ``aitap scan``
+    # still produces something useful. ``ProviderError`` is still
+    # referenced via ``_run_enrichment`` above for profile-path
+    # errors.
+    if not json_mode:
+        typer.secho(
+            "--deep needs a profile to dispatch through. Open Settings "
+            "and add (or pick) a default model profile, then re-run. "
+            "Skipping the deep pass and returning L1 results.",
+            fg=typer.colors.YELLOW,
+            err=True,
         )
-    except Exception as exc:
-        if not json_mode:
-            typer.secho(
-                f"warning: cannot get L2 client ({exc}); falling back to L1 result",
-                fg=typer.colors.YELLOW,
-                err=True,
-            )
-        return result
-
-    return _run_enrichment(
-        result,
-        client,
-        auto_approve=auto_approve,
-        json_mode=json_mode,
-        L2CostEstimate=L2CostEstimate,
-        enrich_with_l2=enrich_with_l2,
-        ProviderError=ProviderError,
-    )
+    return result
 
 
 # ---------------------------------------------------------------------------

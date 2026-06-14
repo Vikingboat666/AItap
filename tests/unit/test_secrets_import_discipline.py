@@ -38,15 +38,17 @@ _ALLOWED_FILES: frozenset[str] = frozenset(
     {
         # The secrets module defines the function; trivially allowed.
         "secrets.py",
-        # The LLM client construction sites — they need the raw key to
-        # hand it to the SDK constructor. These are the only production
-        # surfaces that read the secret out of the vault.
-        "deep/anthropic_client.py",
-        "deep/openai_client.py",
-        # The playground/dispatch layer constructs the client per-run
-        # and passes the resolved key into ``get_client``. Treated as a
-        # construction-path module by design.
-        "playground/dispatch.py",
+        # A2-P3 (contract v4) removed every other caller of the legacy
+        # provider-keyed ``secrets.get_key``: the deep clients no
+        # longer fall back to the vault (they take ``api_key`` as a
+        # constructor argument, resolved by the route layer through
+        # ``get_key_for_profile``), and ``playground/dispatch.py``'s
+        # ``_default_client_factory`` was deleted along with
+        # ``RunCreate.provider`` / ``RunCreate.model``. The legacy
+        # getter remains in ``aitap.secrets`` for now because its zero
+        # external callers are easier to audit than its absence; a
+        # follow-up cleanup can remove it once we're sure nothing in
+        # the wild relies on it via a transitive import.
     }
 )
 

@@ -514,34 +514,20 @@ def test_scan_renders_unicode_glyphs_into_non_utf8_pipe(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_scan_deep_falls_back_to_l1_when_provider_auth_fails(
+def test_scan_deep_falls_back_to_l1_when_no_profile_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Regression: aitap scan --deep with no API key used to crash with a
-    full ProviderAuthError traceback. The contract says: warn on stderr,
-    return the L1 result, exit 0.
-
-    Two code paths cover this now:
-
-    1. The vault-level pre-check (added by the secure-settings worktree)
-       short-circuits before SDK construction when ``secrets.key_status``
-       reports the provider has no key. It emits a plain-language sentence
-       pointing the user at ``aitap ui → Settings`` (or the env var).
-    2. The auth-error catch around ``asyncio.run`` in ``_run_l2`` still
-       handles the case where a key *is* set but the provider rejects
-       it at chat time. That path is exercised in test #2 below.
-
-    This test pins path #1: no env var configured + no vault entry, so
-    the pre-check fires and we never reach the failing client.
+    """Regression: aitap scan --deep with no profile configured used to
+    crash with a ProviderAuthError traceback (legacy path). After A2-P3
+    the legacy provider-keyed fallback is gone — the scanner now
+    requires a configured profile. With no profile, the scanner skips
+    the deep pass with a plain-language sentence and returns the L1
+    result, exit 0.
     """
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    # Pin the vault to an isolated home so a developer running the test
-    # suite with a real Credential Manager key doesn't accidentally
-    # satisfy the pre-check.
-    from aitap import secrets as secrets_module
-
-    monkeypatch.setattr(secrets_module, "_keyring_usable", lambda: False)
+    # Pin home to an isolated temp dir so the user's real ``profiles.yaml``
+    # doesn't satisfy the profile lookup.
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: Path(tempfile.mkdtemp())))
 
     fixture = Path(__file__).resolve().parent.parent / "fixtures" / "openai_basic"
@@ -549,13 +535,10 @@ def test_scan_deep_falls_back_to_l1_when_provider_auth_fails(
     result = runner.invoke(app, ["scan", str(fixture), "--deep", "--yes"])
 
     assert result.exit_code == 0, (
-        f"--deep should not crash on auth failure; got exit {result.exit_code}\n"
-        f"stderr:\n{result.stderr}"
+        f"--deep should not crash; got exit {result.exit_code}\nstderr:\n{result.stderr}"
     )
-    # Plain-language pre-check fired; the user got an actionable sentence
-    # and the L1 result still rendered.
-    assert "needs a Anthropic key" in result.stderr or "needs an Anthropic key" in result.stderr
+    # Plain-language sentence + actionable next step.
+    assert "needs a profile" in result.stderr
     assert "Settings" in result.stderr
-    assert "ANTHROPIC_API_KEY" in result.stderr
     # L1 result still rendered to stdout.
     assert "Prompts" in result.stdout or "•" in result.stdout
