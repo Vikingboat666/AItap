@@ -283,6 +283,66 @@ async def test_post_run_persists_row_and_returns_run_id(
         conn.close()
 
 
+async def test_post_run_with_profile_id_routes_through_profile_factory(
+    client: AsyncClient,
+    settings: Settings,
+) -> None:
+    """``profile_id`` on the payload dispatches via the profile-path seam.
+
+    A2-P1 wires the profile branch into ``invoke_run`` without removing
+    the legacy ``provider`` / ``model`` fields yet. This test installs a
+    profile-path factory that returns a scripted MockLLMClient and
+    asserts:
+
+    1. The run row records the ``profile_id`` (schema v3 column).
+    2. The chat happened against the profile mock — *not* the legacy
+       mock the autouse fixture installs. The legacy ``provider`` /
+       ``model`` fields ride along but are ignored on this branch.
+    3. The per-case output text comes from the profile mock's scripted
+       reply, proving the dispatch routed through the new branch.
+    """
+    profile_mock = MockLLMClient(model="profile-mock", scripted=["from-profile"])
+    legacy_calls: list[tuple[str, str]] = []
+    playground_dispatch.set_client_factory(
+        lambda provider, model: (
+            legacy_calls.append((provider, model)),
+            MockLLMClient(model=model),
+        )[1]
+    )
+    playground_dispatch.set_profile_client_factory(lambda settings, profile_id: profile_mock)
+    try:
+        payload = _run_payload()
+        payload["profile_id"] = "ds-default"
+        payload["cases"] = [{"inputs": {"x": "ping"}}]
+
+        resp = await client.post("/api/runs", json=payload)
+        assert resp.status_code == 202, resp.text
+        body = resp.json()
+        assert body["status"] == "done"
+        run_id = body["run_id"]
+
+        detail = await client.get(f"/api/runs/{run_id}")
+        assert detail.status_code == 200
+        outputs = detail.json()["outputs"]
+        assert len(outputs) == 1
+        assert outputs[0]["text"] == "from-profile"
+
+        conn = _open_conn(settings)
+        try:
+            cur = conn.execute("SELECT profile_id FROM runs WHERE id = ?", (run_id,))
+            row = cur.fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        assert row["profile_id"] == "ds-default"
+
+        assert legacy_calls == []
+        assert len(profile_mock.calls) == 1
+    finally:
+        playground_dispatch.set_client_factory(None)
+        playground_dispatch.set_profile_client_factory(None)
+
+
 async def test_list_runs_filters_by_target(client: AsyncClient) -> None:
     await client.post("/api/runs", json=_run_payload("prompt-aaa", 1))
     await client.post("/api/runs", json=_run_payload("prompt-bbb", 1))

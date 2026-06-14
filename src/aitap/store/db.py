@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from aitap.scanner.models import Pipeline, PromptSite, ProviderEvidence
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # DDL is split per-table so future migrations can ALTER individual tables
 # without re-emitting the whole schema.
@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS runs (
     dataset_id        TEXT,
     provider          TEXT    NOT NULL,
     model             TEXT    NOT NULL,
+    profile_id        TEXT,                                 -- multi-provider profile dispatch (schema v3)
     parameters_json   TEXT    NOT NULL,
     git_commit        TEXT,
     started_at        TEXT    NOT NULL DEFAULT (datetime('now')),
@@ -199,6 +200,21 @@ def _migrate_v2_iterations(conn: sqlite3.Connection) -> None:
     conn.executescript(DDL_ITERATIONS)
 
 
+def _migrate_v3_runs_profile_id(conn: sqlite3.Connection) -> None:
+    """Migration 0002 -> 0003: add nullable ``runs.profile_id`` column.
+
+    Idempotent: ``init_db`` runs :data:`ALL_DDL` (with the updated
+    :data:`DDL_RUNS`) before applying migrations, so a freshly bootstrapped
+    DB already has the column. We detect that case via ``PRAGMA
+    table_info`` and skip the ALTER so the migration is safe on both
+    upgrade and fresh-install paths.
+    """
+    cur = conn.execute("PRAGMA table_info(runs)")
+    columns = {row["name"] for row in cur.fetchall()}
+    if "profile_id" not in columns:
+        conn.execute("ALTER TABLE runs ADD COLUMN profile_id TEXT")
+
+
 # Migrations are functions taking a connection and applying schema changes.
 # Index N migrates from version N-1 to N. Index 0 is unused (no migration needed
 # to reach the bootstrap version); index 1 is the bootstrap-from-empty step
@@ -207,6 +223,7 @@ MIGRATIONS: list = [
     None,  # index 0 — never invoked (no migration to version 0)
     None,  # index 1 — bootstrap; ALL_DDL handles it
     _migrate_v2_iterations,
+    _migrate_v3_runs_profile_id,
 ]
 
 

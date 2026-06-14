@@ -64,6 +64,7 @@ def insert_run(
     model: str,
     parameters_json: str,
     dataset_id: str | None = None,
+    profile_id: str | None = None,
     status: RunStatus = "running",
     cost_usd: float = 0.0,
     git_commit: str | None = None,
@@ -74,14 +75,19 @@ def insert_run(
     ``parameters_json`` is the json-serialised
     :class:`~aitap.scanner.models.CallParameters` payload; we store it as
     text to avoid widening the schema every time we add a new parameter.
+
+    ``profile_id`` records which multi-provider profile a run was
+    dispatched against (schema v3 column, nullable). ``None`` means the
+    legacy ``provider`` + ``model`` dispatch was used; once A2-P3 drops
+    the legacy path this column becomes the single source of truth.
     """
     conn.execute(
         """
         INSERT INTO runs
             (id, target_kind, target_id, target_version, dataset_id,
-             provider, model, parameters_json, git_commit, status,
-             cost_usd, snapshot_dir)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             provider, model, profile_id, parameters_json, git_commit,
+             status, cost_usd, snapshot_dir)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             run_id,
@@ -91,6 +97,7 @@ def insert_run(
             dataset_id,
             provider,
             model,
+            profile_id,
             parameters_json,
             git_commit,
             status,

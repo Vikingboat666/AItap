@@ -78,6 +78,14 @@ _ALLOWED_FILES_PROFILE: frozenset[str] = frozenset(
         # the offline CLI path. Each path has exactly one seam — not
         # two unbounded seams across the codebase.
         "scanner/__init__.py",
+        # ``POST /api/runs`` profile-path dispatch (A2-P1, wt/runs-profile-additive).
+        # When ``RunCreate.profile_id`` is set, the playground adapter's
+        # ``_default_profile_client_factory`` resolves the per-profile key
+        # and builds the client via ``deep.factory.get_client_for_profile_config``.
+        # This is the playground/dispatch entry point's single seam (the
+        # ``/api/runs`` request flow has its own profile dispatch separate
+        # from the ``/api/profiles/{id}/test`` flow owned by ``profiles.py``).
+        "playground/dispatch.py",
     }
 )
 

@@ -156,6 +156,14 @@ class RunCreate(_ApiModel):
     dataset_id: str | None = None  # alternative to inline cases
     provider: Provider
     model: str
+    # Additive multi-provider migration (A2-P1). When set, the dispatch
+    # adapter resolves the profile + its API key from secrets.yaml /
+    # keyring and builds a client via aitap.deep.factory.
+    # get_client_for_profile_config; the legacy ``provider`` / ``model``
+    # fields are ignored on that branch (but stay required until A2-P3
+    # drops them to keep the contract additive). Clients that don't yet
+    # know about profiles keep working unchanged.
+    profile_id: str | None = None
     parameters: CallParameters
 
     # ---- Pipeline run-mode selectors (ignored when target_kind == "prompt") ----
