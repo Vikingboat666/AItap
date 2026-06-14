@@ -32,6 +32,7 @@ from .base import (
     dedupe_edges,
 )
 from .cross_file_orchestration import CrossFileOrchestration
+from .intra_class_method_chain import IntraClassMethodChain
 from .intra_file_chain import IntraFileChain
 from .langchain_pipe import LangChainPipe
 from .llamaindex_engine import LlamaIndexEngine
@@ -43,6 +44,7 @@ if TYPE_CHECKING:
 __all__ = [
     "CrossFileOrchestration",
     "DataflowDetector",
+    "IntraClassMethodChain",
     "IntraFileChain",
     "LangChainPipe",
     "LlamaIndexEngine",
@@ -59,8 +61,20 @@ def default_detectors() -> list[DataflowDetector]:
     """The MVP intra-file detector roster. Order doesn't affect correctness
     — the orchestrator dedupes — but it does affect which detector "wins"
     when multiple propose the same edge with equal confidence; first wins.
+
+    :class:`IntraClassMethodChain` (B1) sits between the free-function
+    detectors and the LlamaIndex engine rule: it covers the
+    multi-turn-engine shape (``self.<method>(...)`` orchestration of
+    LLM-bearing methods on the same class) that the others miss by
+    construction.
     """
-    return [VariableTracker(), LangChainPipe(), IntraFileChain(), LlamaIndexEngine()]
+    return [
+        VariableTracker(),
+        LangChainPipe(),
+        IntraFileChain(),
+        IntraClassMethodChain(),
+        LlamaIndexEngine(),
+    ]
 
 
 def default_cross_file_detectors() -> list[CrossFileOrchestration]:

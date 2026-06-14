@@ -1,13 +1,25 @@
 # Scanner — cross-file orchestration recognition
 
-Status: **Implemented in PR #51** (2026-06-05). Rule shipped per the
-"Recommended approach for the dedicated worktree" section below.
-Verified against cc-project: pipelines went from **0** to **1**
-(`plan_day_pipeline`, 4 nodes / 3 edges, anchored by
-`DailyRunner.run`). The "do NOT" list survives intact — no agent-like
-hints, no method-name heuristics; resolution is purely
-`self.<attr> = <Class>()` through `__init__` + `from <module> import
-<Class>` imports.
+Status: **Implemented.** Two rules now live in this design space:
+
+- **PR #51 (2026-06-05)** — original cross-file rule. Resolves
+  `self.<attr>.<method>(...)` where `<attr>` points through `__init__`
+  to a class defined in another LLM-bearing file. Verified against
+  cc-project: pipelines went from **0** to **1** (`plan_day_pipeline`,
+  4 nodes / 3 edges, anchored by `DailyRunner.run`).
+- **PR #73 (B1, `wt/scanner-pipelines`)** — same-class sibling rule
+  (`IntraClassMethodChain` in
+  `src/aitap/scanner/dataflow/intra_class_method_chain.py`). Resolves
+  `self.<method>(...)` where `<method>` is a method of the *same*
+  class whose body contains an LLM PromptSite. Covers the multi-turn
+  engine shape (`interaction_engine`'s `classify_intent` →
+  `generate_response` → `validate` …) that PR #51's rule can't see
+  because there's no `<attr>` hop. Threshold: ≥3 distinct LLM-bearing
+  steps per orchestrator method (below that we'd overlap with the
+  existing free-function helper detectors). Confidence: MEDIUM.
+  Same "do NOT" list applies — no agent-like hints, no method-name
+  heuristics; resolution is purely syntactic
+  (`self.<name>` bound-method calls + per-method PromptSite anchor).
 
 ## The problem
 
