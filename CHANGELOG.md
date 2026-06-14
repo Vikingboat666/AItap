@@ -6,6 +6,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+
+**Tests — doc-currency PR-time guard**
+- PR #69 (`wt/doc-currency-pr-guard`) — closes the structural gap that produced the PR #65 → PR #67 → PR #68 backfill cycle. The existing `test_changelog_unreleased_references_every_recent_pr` only sees a PR **after squash has happened**, because it depends on the `(#NNN)` suffix GitHub appends to the squash commit subject. At PR-time the head commit doesn't carry that suffix yet, so the test silently skipped the in-flight PR, let it pass CI without a CHANGELOG entry, and the **next** PR opened to a red main. The new `test_changelog_unreleased_references_current_pr` detects GitHub Actions `pull_request` context via `GITHUB_EVENT_NAME` / `GITHUB_REF` / `GITHUB_EVENT_PATH`, parses the current PR number from `refs/pull/<N>/merge`, reads the PR title + body from the event payload JSON, and asserts `#{pr_number}` appears in `[Unreleased]` (or the topmost versioned section, reusing PR #64's `_extract_topmost_versioned_section` helper that handles the release-PR case). Opt-out: `[no-changelog]` in PR title or body — the same marker the post-merge check honours on squash commit messages, so contributors learn one convention not two. Skips outside CI (no env vars set), local pytest behaviour unchanged. `CLAUDE.md` "Documentation currency" section bumped from 2-step to 3-step to describe the new PR-time check alongside the existing post-merge check + design-doc Status check. Backend tests: 939 → **940** (1 new test, skipped locally; runs in CI PR builds).
+
 ### Fixed
 
 **Scanner — exclude test dirs by default + populate pipeline node labels**
