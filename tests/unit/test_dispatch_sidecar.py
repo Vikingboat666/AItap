@@ -82,11 +82,11 @@ def mock_client_factory() -> Iterator[MockLLMClient]:
         scripted=["reply-0", "reply-1", "reply-2", "reply-3"],
         default_reply="reply-default",
     )
-    dispatch.set_client_factory(lambda provider, model: mock)
+    dispatch.set_profile_client_factory(lambda settings, profile_id: mock)
     try:
         yield mock
     finally:
-        dispatch.set_client_factory(None)
+        dispatch.set_profile_client_factory(None)
 
 
 @pytest.fixture()
@@ -103,11 +103,11 @@ def failing_client_factory() -> Iterator[MockLLMClient]:
             raise RuntimeError("simulated provider outage")
 
     mock = _AlwaysFailingClient(model="mock-model")
-    dispatch.set_client_factory(lambda provider, model: mock)
+    dispatch.set_profile_client_factory(lambda settings, profile_id: mock)
     try:
         yield mock
     finally:
-        dispatch.set_client_factory(None)
+        dispatch.set_profile_client_factory(None)
 
 
 def _open_conn(project: Settings) -> sqlite3.Connection:
@@ -185,8 +185,7 @@ def _seed_run_row(
             target_kind=target_kind,
             target_id=target_id,
             target_version=1,
-            provider="anthropic",
-            model="mock-model",
+            profile_id="prof-mock",
             parameters_json="{}",
         )
     finally:
@@ -204,8 +203,7 @@ def _build_payload(
         target_id=target_id,
         target_version=1,
         cases=cases or [],
-        provider=Provider.ANTHROPIC,
-        model="mock-model",
+        profile_id="prof-mock",
         parameters=CallParameters(temperature=0.0),
     )
 
@@ -474,14 +472,19 @@ def test_sidecar_empty_when_no_cases(
 
 def test_no_sidecar_written_when_dispatch_fails_at_run_level(
     project: Settings,
+    mock_client_factory: MockLLMClient,
 ) -> None:
     """A run-level failure (missing prompt) writes no sidecar.
 
     The reader's contract says "missing file → empty list," which is the
     legitimate state for a failed run that never produced per-case
     outputs. We assert the file is absent so we don't accidentally
-    create a misleading empty sidecar in this path.
+    create a misleading empty sidecar in this path. The profile seam
+    is installed via the fixture so the client builds cleanly; the
+    failure under test is the prompt-not-found ValueError raised after
+    client construction.
     """
+    _ = mock_client_factory
     run_id = "test-no-sidecar"
     _seed_run_row(project, run_id, "no-such-prompt")
     payload = _build_payload(target_id="no-such-prompt", cases=[])

@@ -119,13 +119,11 @@ def test_constructing_client_does_not_touch_network(monkeypatch: pytest.MonkeyPa
 async def test_chat_raises_provider_auth_error_when_key_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    # Isolate from the user's global keyring/fallback-file state so the
-    # test passes on a machine that already has a key configured.
-    monkeypatch.setattr(
-        "aitap.deep.anthropic_client._secrets.get_key",
-        lambda *_args, **_kwargs: None,
-    )
+    """After A2-P3 (contract v4) the secrets-vault fallback was removed:
+    ``api_key`` has to be passed explicitly by the only constructor
+    caller (``aitap.deep.factory.get_client_for_profile_config``).
+    Construct without one and the first ``chat()`` raises with a
+    plain-language message pointing at Settings."""
     _install_fake_sdk(monkeypatch, _FakeMessage("hi"))
     client = AnthropicClient(model="claude-sonnet-4-6")
     with pytest.raises(ProviderAuthError):
@@ -304,15 +302,9 @@ def test_estimate_cost_for_unpriced_model_returns_zero() -> None:
     assert estimate.usd == 0.0
 
 
-# --------------------------------------------------------------------------- #
-# Registry self-registration                                                  #
-# --------------------------------------------------------------------------- #
-
-
-def test_anthropic_client_self_registers() -> None:
-    from aitap.deep.client import get_client
-
-    # Importing the module above already triggered register_provider.
-    instance = get_client("anthropic", "claude-sonnet-4-6", api_key="x")
-    assert isinstance(instance, AnthropicClient)
-    assert instance.model == "claude-sonnet-4-6"
+# The legacy ``register_provider("anthropic", ...)`` self-registration
+# and the ``get_client("anthropic", ...)`` registry lookup were removed
+# in A2-P3 (contract v4) along with ``RunCreate.provider`` /
+# ``RunCreate.model``. ``AnthropicClient`` is now only constructed via
+# :func:`aitap.deep.factory.get_client_for_profile_config`, exercised
+# by ``tests/unit/test_deep_factory.py``.

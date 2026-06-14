@@ -109,7 +109,8 @@ class IterateSessionRequest(BaseModel):
     ``provider`` / ``model`` selection is intentionally absent — the
     background task constructs an :class:`LLMClient` via the same
     factory the playground uses, which already reads project Settings.
-    Tests substitute via :func:`aitap.playground.dispatch.set_client_factory`.
+    Tests substitute via
+    :func:`aitap.playground.dispatch.set_profile_client_factory`.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -362,15 +363,24 @@ async def _run_iterate_in_background(
     traceback here is the only useful diagnostic the user gets.
     """
     try:
-        # The dispatch module exposes ``set_client_factory`` for tests
-        # to swap the underlying callable; we read the live factory off
-        # the module attribute directly so the test seam keeps working
-        # without forcing dispatch to publish a new accessor. The
-        # underscore name is the documented test seam (see
-        # ``playground/dispatch.py``), so the private-usage warning is
-        # spurious here.
-        client = playground_dispatch._client_factory(  # pyright: ignore[reportPrivateUsage]
-            settings.provider.name, settings.provider.model
+        # A2-P3: dispatch is profile-keyed. The iterate background task
+        # uses the configured default profile
+        # (``settings.defaults.model_profile_id``); when no default is
+        # configured it raises ``ProfileDispatchError`` and we fall
+        # through to the failure-marker path below — same as the
+        # provider-unreachable case the docstring promised.
+        default_profile_id = settings.defaults.model_profile_id
+        if not default_profile_id:
+            raise playground_dispatch.ProfileDispatchError(
+                "No default profile configured. Open Settings and pick a "
+                "default model profile, then re-run."
+            )
+        # The dispatch module's ``set_profile_client_factory`` is the
+        # designated test seam — we read the live factory off the
+        # module attribute directly so tests' swap keeps working
+        # without forcing dispatch to publish a new accessor.
+        client = playground_dispatch._profile_client_factory(  # pyright: ignore[reportPrivateUsage]
+            settings, default_profile_id
         )
         # Pin the loop to our pre-minted session_id via the loop's
         # explicit kwarg. This is concurrency-safe — two simultaneous

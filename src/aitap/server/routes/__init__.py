@@ -1,5 +1,18 @@
 """HTTP API contract.
 
+Contract version: 4 (2026-06-14) — breaking change: legacy provider/model on
+``RunCreate`` retired. ``RunCreate.provider`` and ``RunCreate.model`` are
+removed; ``RunCreate.profile_id`` (additive in v3 via PR #70) becomes a
+**required** field. Every ``POST /api/runs`` now dispatches through the
+multi-provider profile path
+(``aitap.deep.factory.get_client_for_profile_config``). The legacy
+provider-keyed dispatch (``aitap.playground.dispatch._default_client_factory``,
+``aitap.deep.client.register_provider`` / ``get_client``,
+``aitap.deep.openai_client.OpenAIClient``) is deleted in this version —
+the only remaining client construction is profile-keyed. See
+``docs/profiles-design.md`` for the redesign rationale and the A2 retire
+plan (A2-P1 #70 additive, A2-P2 #71 UI sender, A2-P3 #72 BREAKING).
+
 Contract version: 3 (2026-05-31) — breaking change: provider enum → profiles list.
 The legacy provider-keyed request/response types (``ProviderKeyStatus``,
 ``SetKeyRequest``, ``TestKeyResponse``, ``SettingsUpdate``) and the
@@ -154,21 +167,14 @@ class RunCreate(_ApiModel):
     target_version: int
     cases: list[DatasetCase] = Field(default_factory=list)
     dataset_id: str | None = None  # alternative to inline cases
-    provider: Provider
-    model: str
-    # Additive multi-provider migration (A2-P1). When set, the dispatch
-    # adapter resolves the profile + its API key from secrets.yaml /
-    # keyring and builds a client via aitap.deep.factory.
-    # get_client_for_profile_config; the legacy ``provider`` / ``model``
-    # fields are ignored on that branch (but stay required until A2-P3
-    # drops them to keep the contract additive). Clients that don't yet
-    # know about profiles keep working unchanged.
-    #
-    # Clients sending ``profile_id`` must still include any valid
-    # ``provider`` enum value and a non-empty ``model`` string — they
-    # are ignored by dispatch but pydantic enforces them on the wire
-    # until A2-P3.
-    profile_id: str | None = None
+    # Multi-provider profile dispatch (REQUIRED in contract v4 / A2-P3).
+    # The dispatch adapter resolves the profile + its API key from
+    # secrets.yaml / keyring and builds a client via
+    # ``aitap.deep.factory.get_client_for_profile_config``. The legacy
+    # ``provider`` + ``model`` fields were removed in this version; if
+    # you need to switch which provider a run uses, switch profiles in
+    # Settings (or send a different ``profile_id``).
+    profile_id: str
     parameters: CallParameters
 
     # ---- Pipeline run-mode selectors (ignored when target_kind == "prompt") ----

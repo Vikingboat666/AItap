@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import pytest
 
-from aitap.deep.client import _REGISTRY as _CHAT_REGISTRY  # type: ignore[attr-defined]
 from aitap.images.client import _REGISTRY as _IMAGE_REGISTRY
 from aitap.images.client import (
     GeneratedImage,
@@ -245,11 +244,12 @@ def test_get_image_client_raises_for_unknown_provider() -> None:
         get_image_client("definitely-not-a-real-provider", model="x")
 
 
-def test_image_registry_is_separate_from_chat_registry() -> None:
-    """Wave 5 Part B Decision 1: a provider name like ``"openai"`` may
-    register under both the chat (``aitap.deep.client``) and image
-    (``aitap.images.client``) namespaces independently. Pin that the
-    two registries are distinct mappings — sharing one would force a
-    fake compound key.
-    """
-    assert _CHAT_REGISTRY is not _IMAGE_REGISTRY
+# A2-P3 (contract v4) removed the chat-side ``aitap.deep.client._REGISTRY``
+# entirely — chat clients are now built by ``aitap.deep.factory`` keyed
+# on profiles, not by a global string-keyed registry. The image-side
+# registry survives because images dispatch is still provider-keyed
+# (Wave 5 Part B Decision 1), so the old "two registries are distinct"
+# pin would compare against a non-existent symbol. ``_IMAGE_REGISTRY``
+# is still imported above and exercised by the snapshot / clone tests
+# in this module — that's enough to keep the image-side contract
+# locked down.

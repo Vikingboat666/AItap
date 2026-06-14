@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -81,11 +81,38 @@ DATASET_ID = "iter-cases"
 
 @pytest.fixture()
 def settings(tmp_path: Path) -> Settings:
-    """Throwaway Settings rooted at tmp_path with .aitap pre-created."""
+    """Throwaway Settings rooted at tmp_path with .aitap pre-created.
+
+    After contract v4 (A2-P3) the iterate background task dispatches
+    via a profile. We pin the default profile id here so the route
+    handler picks it up; the autouse ``_mock_iterate_client`` fixture
+    installs a profile-path seam that returns a MockLLMClient
+    regardless of the id we set.
+    """
     aitap_dir = tmp_path / ".aitap"
     for child in ("prompts", "pipelines", "datasets", "runs"):
         (aitap_dir / child).mkdir(parents=True, exist_ok=True)
-    return Settings(project_root=tmp_path)
+    settings = Settings(project_root=tmp_path)
+    settings.defaults.model_profile_id = "prof-iterate"
+    return settings
+
+
+@pytest.fixture(autouse=True)
+def _mock_iterate_client() -> Iterator[None]:
+    """Install a profile-path MockLLMClient seam for the iterate test run.
+
+    The iterate route's background task calls
+    ``_profile_client_factory(settings, settings.defaults.model_profile_id)``
+    after A2-P3; without this fixture every test would hit the real
+    ``load_profiles_from_yaml`` path and fail with
+    ``ProfileDispatchError``.
+    """
+    from aitap.deep.testing import MockLLMClient
+    from aitap.playground import dispatch as playground_dispatch
+
+    playground_dispatch.set_profile_client_factory(lambda settings, profile_id: MockLLMClient())
+    yield
+    playground_dispatch.set_profile_client_factory(None)
 
 
 @pytest.fixture()

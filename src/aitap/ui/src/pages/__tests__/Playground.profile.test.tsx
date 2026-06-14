@@ -111,25 +111,31 @@ describe("Playground — multi-provider profile picker (A2-P2)", () => {
     expect(captured.body!.profile_id).toBe("prof_default");
   });
 
-  it("switching to 'use legacy' posts profile_id: null", async () => {
-    const captured = installRunCapture();
+  it("disables Run when no profile is selected (empty-profiles case)", async () => {
+    // After contract v4 (A2-P3) the legacy provider/model fallback is
+    // gone — the picker is required. When no profile is configured the
+    // picker shows the empty-state text and the Run button stays
+    // disabled (no dangling profile_id on the wire).
+    installRunCapture();
+    server.use(
+      http.get("/api/profiles", () => HttpResponse.json([])),
+      http.get("/api/settings", () =>
+        HttpResponse.json({
+          ...settingsFixture,
+          defaults: { model_profile_id: null, judge_profile_id: null },
+        }),
+      ),
+    );
     renderWithProviders(<Playground />, {
       route: "/playground/pipeline/pl_test_one",
       path: "/playground/:targetKind/:targetId",
     });
 
-    const select = (await screen.findByLabelText(/use profile/i)) as HTMLSelectElement;
-    await waitFor(() => expect(select.value).toBe("prof_default"));
-    await userEvent.selectOptions(select, "");
-    expect(select.value).toBe("");
-
-    await switchToEndToEndAndRun();
-    await waitFor(() => expect(captured.body).not.toBeNull());
-    expect(captured.body!.profile_id).toBeNull();
-    // Legacy fallback still rides on the wire so the backend has the
-    // provider/model to dispatch with.
-    expect(captured.body!.provider).toBeDefined();
-    expect(captured.body!.model).toBeDefined();
+    await screen.findByText(/Open Settings to add one/i);
+    // Switch to end-to-end so the only remaining gate is the missing
+    // profile. The Run button must still be disabled.
+    await userEvent.click(screen.getByRole("button", { name: /^end-to-end$/i }));
+    expect(screen.getByRole("button", { name: /^run$/i })).toBeDisabled();
   });
 
   it("seeds the picker on a later refetch when the first /api/profiles response is empty", async () => {

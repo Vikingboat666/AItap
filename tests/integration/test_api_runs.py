@@ -93,16 +93,16 @@ def _reset_profiles_state() -> Iterator[None]:
 def _mock_invoke_run_client() -> Iterator[None]:
     """Inject a :class:`MockLLMClient` into ``invoke_run`` for the test run.
 
-    Without this every ``POST /api/runs`` would try to construct a real
-    Anthropic client. Construction itself is cheap (no network) but the
-    test suite must stay hermetic and provider-key-free. Tests that care
-    about actual chat behaviour can override this fixture locally; the
-    default ``cases=[]`` payload makes zero calls anyway, so the mock
-    just covers the "construction doesn't talk to the network" promise.
+    After A2-P3 (contract v4) dispatch is profile-keyed only; the seam
+    is :func:`aitap.playground.dispatch.set_profile_client_factory`.
+    Tests that care about actual chat behaviour can override this
+    fixture locally; the default ``cases=[]`` payload makes zero calls
+    anyway, so the mock just covers the "construction doesn't talk to
+    the network" promise.
     """
-    playground_dispatch.set_client_factory(lambda provider, model: MockLLMClient(model=model))
+    playground_dispatch.set_profile_client_factory(lambda settings, profile_id: MockLLMClient())
     yield
-    playground_dispatch.set_client_factory(None)
+    playground_dispatch.set_profile_client_factory(None)
 
 
 @pytest.fixture(autouse=True)
@@ -128,14 +128,20 @@ async def client(app_with_settings) -> AsyncIterator[AsyncClient]:
 
 
 def _run_payload(target_id: str = "prompt-abc", version: int = 1) -> dict[str, object]:
-    """Build a minimal RunCreate payload accepted by the API."""
+    """Build a minimal RunCreate payload accepted by the API.
+
+    Contract v4 (A2-P3): ``profile_id`` is required and the only
+    dispatch selector. ``provider`` / ``model`` are no longer accepted.
+    The tests' autouse ``_mock_invoke_run_client`` fixture short-circuits
+    profile resolution by installing a profile-path factory that returns
+    a MockLLMClient regardless of the id sent here.
+    """
     return {
         "target_kind": "prompt",
         "target_id": target_id,
         "target_version": version,
         "cases": [],
-        "provider": "anthropic",
-        "model": "claude-sonnet-4-6",
+        "profile_id": "prof-test",
         "parameters": {"temperature": 0.2},
     }
 
@@ -234,8 +240,7 @@ def _pipeline_run_payload(
         "target_id": pipeline_id,
         "target_version": 1,
         "cases": [],
-        "provider": "anthropic",
-        "model": "claude-sonnet-4-6",
+        "profile_id": "prof-test",
         "parameters": {"temperature": 0.0},
     }
     if mode is not None:
@@ -273,8 +278,11 @@ async def test_post_run_persists_row_and_returns_run_id(
         assert row is not None
         assert row["target_id"] == "prompt-abc"
         assert row["target_version"] == 1
-        assert row["provider"] == "anthropic"
-        assert row["model"] == "claude-sonnet-4-6"
+        # Contract v4 stores ``profile_id`` instead of the legacy
+        # provider/model pair; new rows default provider/model to "".
+        assert row["profile_id"] == "prof-test"
+        assert row["provider"] == ""
+        assert row["model"] == ""
         assert row["status"] == "done"
         assert row["finished_at"] is not None
         # parameters are stored as serialised JSON; round-trip the temperature.
@@ -302,13 +310,6 @@ async def test_post_run_with_profile_id_routes_through_profile_factory(
        reply, proving the dispatch routed through the new branch.
     """
     profile_mock = MockLLMClient(model="profile-mock", scripted=["from-profile"])
-    legacy_calls: list[tuple[str, str]] = []
-    playground_dispatch.set_client_factory(
-        lambda provider, model: (
-            legacy_calls.append((provider, model)),
-            MockLLMClient(model=model),
-        )[1]
-    )
     playground_dispatch.set_profile_client_factory(lambda settings, profile_id: profile_mock)
     try:
         payload = _run_payload()
@@ -336,10 +337,8 @@ async def test_post_run_with_profile_id_routes_through_profile_factory(
         assert row is not None
         assert row["profile_id"] == "ds-default"
 
-        assert legacy_calls == []
         assert len(profile_mock.calls) == 1
     finally:
-        playground_dispatch.set_client_factory(None)
         playground_dispatch.set_profile_client_factory(None)
 
 
@@ -364,27 +363,37 @@ async def test_post_run_with_unknown_profile_id_marks_failed_and_records_profile
     legacy factory in place (the failure happens in the profile path
     before either factory's mock client is constructed).
     """
-    payload = _run_payload()
-    payload["profile_id"] = "not-configured"
-
-    resp = await client.post("/api/runs", json=payload)
-    assert resp.status_code == 422, resp.text
-    detail = resp.json()["detail"]
-    assert "No profile with id 'not-configured'" in detail
-    # Plain-language CLAUDE.md compliance — the detail must name the next action.
-    assert "Open Settings" in detail
-
-    conn = _open_conn(settings)
+    # The autouse fixture installs a profile-path mock that would mask
+    # the failure under test; restore the production factory for the
+    # duration of this case so the unknown-profile error path actually
+    # runs.
+    playground_dispatch.set_profile_client_factory(None)
     try:
-        cur = conn.execute(
-            "SELECT id, status, profile_id FROM runs ORDER BY started_at DESC LIMIT 1"
-        )
-        row = cur.fetchone()
+        payload = _run_payload()
+        payload["profile_id"] = "not-configured"
+
+        resp = await client.post("/api/runs", json=payload)
+        assert resp.status_code == 422, resp.text
+        detail = resp.json()["detail"]
+        assert "No profile with id 'not-configured'" in detail
+        # Plain-language CLAUDE.md compliance — the detail must name the next action.
+        assert "Open Settings" in detail
+
+        conn = _open_conn(settings)
+        try:
+            cur = conn.execute(
+                "SELECT id, status, profile_id FROM runs ORDER BY started_at DESC LIMIT 1"
+            )
+            row = cur.fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        assert row["status"] == "failed"
+        assert row["profile_id"] == "not-configured"
     finally:
-        conn.close()
-    assert row is not None
-    assert row["status"] == "failed"
-    assert row["profile_id"] == "not-configured"
+        # Reinstate the autouse fixture's default for the rest of the
+        # session.
+        playground_dispatch.set_profile_client_factory(lambda settings, profile_id: MockLLMClient())
 
 
 async def test_list_runs_filters_by_target(client: AsyncClient) -> None:
@@ -447,7 +456,7 @@ async def test_get_run_returns_per_case_outputs_from_sidecar(
         model="claude-sonnet-4-6",
         scripted=["case-0-output", "case-1-output", "case-2-output"],
     )
-    playground_dispatch.set_client_factory(lambda provider, model: scripted_mock)
+    playground_dispatch.set_profile_client_factory(lambda settings, profile_id: scripted_mock)
     try:
         payload = _run_payload()
         payload["cases"] = [
@@ -475,7 +484,7 @@ async def test_get_run_returns_per_case_outputs_from_sidecar(
     finally:
         # Reinstate the autouse fixture's default so other tests in the
         # session aren't affected.
-        playground_dispatch.set_client_factory(lambda provider, model: MockLLMClient(model=model))
+        playground_dispatch.set_profile_client_factory(lambda settings, profile_id: MockLLMClient())
 
 
 # ---------------------------------------------------------------------------

@@ -57,7 +57,6 @@ import {
 } from "../components/ResultsTable";
 import { AutoIterateModal } from "../components/AutoIterateModal";
 import { IterationProgress } from "../components/IterationProgress";
-import { MissingKeyInlineAlert } from "../components/MissingKeyInlineAlert";
 import { PromptPreviewCard } from "../components/PromptPreviewCard";
 import { DagView } from "./components/DagView";
 import { clsx } from "../lib/clsx";
@@ -144,7 +143,6 @@ export function Playground() {
   // those by design.
   const [pipelineSelection, setPipelineSelection] = useState<string[]>([]);
   const [cases, setCases] = useState<CaseDraft[]>(DEFAULT_DRAFTS);
-  const [model, setModel] = useState<string>("");
   const [temperature, setTemperature] = useState<number>(0.2);
   // Selected multi-provider profile id (A2-P2). ``null`` means "use the
   // legacy provider/model dispatch" — same behaviour the page had
@@ -161,14 +159,6 @@ export function Playground() {
   const [iterateModalOpen, setIterateModalOpen] = useState(false);
   const [iterateSession, setIterateSession] =
     useState<IterateSessionResponse | null>(null);
-
-  // Seed model from settings the first time settings resolve. After
-  // that the user owns the field.
-  useEffect(() => {
-    if (settingsQ.data && !model) {
-      setModel(settingsQ.data.model);
-    }
-  }, [settingsQ.data, model]);
 
   // Multi-provider profile picker (A2-P2). Lists every configured
   // profile so the user can pick one and route the run through the
@@ -332,9 +322,7 @@ export function Playground() {
       if (parsedCases.length === 0) {
         throw new Error(t("playground.errorAddCase"));
       }
-      const effectiveModel =
-        model || settingsQ.data?.model || "gpt-4o-mini";
-      const provider = settingsQ.data?.provider ?? "openai";
+      if (!profileId) throw new Error(t("playground.errorNoProfile"));
       // Pipeline runs carry an explicit mode + exactly one matching
       // selector. Prompt runs carry none (the backend only validates
       // pipeline targets). We send only the selector for the active mode
@@ -346,15 +334,11 @@ export function Playground() {
           target_kind: selectedTarget.kind,
           target_id: selectedTarget.id,
           target_version: targetVersion,
-          provider,
-          model: effectiveModel,
-          // A2-P2: when a profile is selected the backend routes
-          // through ``deep.factory.get_client_for_profile_config`` and
-          // ignores ``provider``/``model``. ``null`` (or omitted) keeps
-          // the legacy provider/model dispatch unchanged.
+          // Contract v4 (A2-P3): ``profile_id`` is the only dispatch
+          // selector. The backend resolves it to a concrete client via
+          // ``deep.factory.get_client_for_profile_config``.
           profile_id: profileId,
           parameters: {
-            model: effectiveModel,
             temperature,
           },
           cases: parsedCases,
@@ -461,6 +445,10 @@ export function Playground() {
     !caseHasErrors &&
     parsedCases.length > 0 &&
     pipelineSelectionReady &&
+    // Contract v4 (A2-P3): no profile ⇒ no dispatch path. The picker
+    // empty-state surfaces "Open Settings to add one" so the user
+    // knows the next action.
+    !!profileId &&
     !runMutation.isPending;
 
   return (
@@ -485,15 +473,10 @@ export function Playground() {
           loading={profilesQ.isLoading}
         />
 
-        <ModelControls
-          model={model}
+        <TemperatureControl
           temperature={temperature}
-          onModelChange={setModel}
           onTemperatureChange={setTemperature}
-          providerHint={settingsQ.data?.provider}
         />
-
-        <MissingKeyInlineAlert provider={settingsQ.data?.provider} />
 
         <button
           type="button"
@@ -847,13 +830,13 @@ function TargetList({
 }
 
 /**
- * Multi-provider profile picker (A2-P2). Lets the user pick one of the
- * configured profiles so the run dispatches through
- * ``deep.factory.get_client_for_profile_config``; leaving it on the
- * legacy option falls back to ``provider`` + ``model``.
- *
- * Empty state: no profiles configured ⇒ point the user at Settings
- * (CLAUDE.md plain-language: explain the cause + name the next action).
+ * Multi-provider profile picker. After contract v4 (A2-P3) the picker
+ * is required — every run dispatches through
+ * ``deep.factory.get_client_for_profile_config``. The legacy
+ * provider/model fallback was removed; the empty-state points the
+ * user at Settings (CLAUDE.md plain-language: explain the cause +
+ * name the next action) and the parent's ``canRun`` gate disables
+ * Run until a profile is chosen.
  */
 function ProfileSelector({
   profiles,
@@ -896,7 +879,11 @@ function ProfileSelector({
               }
               className="w-full rounded-md border border-ink-200 px-2 py-1 text-xs focus:border-brand-500 focus:outline-none"
             >
-              <option value="">{t("playground.profileUseLegacy")}</option>
+              {profileId === null && (
+                <option value="" disabled>
+                  {t("playground.profilePickPlaceholder")}
+                </option>
+              )}
               {profiles.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.label} ({p.model_id})
@@ -905,7 +892,7 @@ function ProfileSelector({
             </select>
             <p className="text-[11px] text-ink-400">
               {profileId === null
-                ? t("playground.profileHintLegacy")
+                ? t("playground.profilePickHint")
                 : t("playground.profileHintActive")}
             </p>
           </>
@@ -915,43 +902,23 @@ function ProfileSelector({
   );
 }
 
-function ModelControls({
-  model,
+/**
+ * Temperature-only sub-card. After contract v4 (A2-P3) the model is
+ * dictated by the chosen profile, so the only remaining knob a user
+ * tweaks per-run is sampling temperature.
+ */
+function TemperatureControl({
   temperature,
-  onModelChange,
   onTemperatureChange,
-  providerHint,
 }: {
-  model: string;
   temperature: number;
-  onModelChange: (s: string) => void;
   onTemperatureChange: (n: number) => void;
-  providerHint?: string;
 }) {
   const { t } = useTranslation();
   return (
     <Card>
-      <CardHeader
-        title={t("playground.model")}
-        action={providerHint ? <Badge tone="brand">{providerHint}</Badge> : null}
-      />
+      <CardHeader title={t("playground.sampling")} />
       <div className="space-y-3 px-4 py-3">
-        <div>
-          <label
-            htmlFor="model-input"
-            className="mb-1 block text-[11px] uppercase text-ink-400"
-          >
-            {t("playground.model")}
-          </label>
-          <input
-            id="model-input"
-            type="text"
-            value={model}
-            onChange={(e) => onModelChange(e.target.value)}
-            placeholder="gpt-4o-mini"
-            className="w-full rounded-md border border-ink-200 px-2 py-1 text-xs focus:border-brand-500 focus:outline-none"
-          />
-        </div>
         <div>
           <label
             htmlFor="temperature-input"

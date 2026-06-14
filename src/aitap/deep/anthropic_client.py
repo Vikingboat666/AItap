@@ -12,10 +12,8 @@ fails informatively only when the user actually tries to *use* anthropic.
 
 from __future__ import annotations
 
-import os
 from typing import TYPE_CHECKING, Any, Literal
 
-from aitap import secrets as _secrets
 from aitap.deep.client import (
     ChatMessage,
     ChatResponse,
@@ -25,7 +23,6 @@ from aitap.deep.client import (
     ProviderError,
     ProviderRateLimitError,
     TokenUsage,
-    register_provider,
 )
 from aitap.deep.pricing import UnknownModelError, estimate_usd
 
@@ -143,18 +140,18 @@ class AnthropicClient(LLMClient):
         )
 
     def _resolve_api_key(self) -> str:
-        # The vault module is the single owner of key reads — env-var
-        # fallback included. Going through ``secrets.get_key`` (instead
-        # of poking ``os.environ`` directly) means a UI-saved key in the
-        # OS keyring wins over a stale env var, which is what the user
-        # picked the most recently.
-        key = self.api_key or _secrets.get_key("anthropic")
-        if not key:
+        # After contract v4 (A2-P3), the only constructor caller is the
+        # profile factory in :mod:`aitap.deep.factory`, which always
+        # passes ``api_key`` explicitly (resolved through
+        # :func:`aitap.secrets.get_key_for_profile` at the route layer).
+        # The secrets-vault fallback that lived here for direct
+        # legacy callers was removed alongside the legacy registry.
+        if not self.api_key:
             raise ProviderAuthError(
-                "No Anthropic API key set. Add one in aitap ui → Settings, "
-                "or export ANTHROPIC_API_KEY in your shell."
+                "No Anthropic API key set. Open Settings and add (or fix) "
+                "the key for this profile, then re-run."
             )
-        return key
+        return self.api_key
 
 
 # --------------------------------------------------------------------------- #
@@ -251,70 +248,11 @@ def _safe_cost_from_tokens(model: str, input_tokens: int, output_tokens: int) ->
         return 0.0
 
 
-def anthropic_factory(model: str, key: str | None) -> AnthropicClient:
-    """Build an :class:`AnthropicClient` for the legacy provider-keyed
-    factory (``register_provider("anthropic", ...)``), honouring the
-    ``ANTHROPIC_BASE_URL`` environment variable when set.
-
-    This is the seam that lets users run ``aitap scan --deep`` against
-    any Anthropic-protocol-compatible gateway — including DeepSeek's
-    ``https://api.deepseek.com/anthropic`` endpoint, a self-hosted
-    Anthropic gateway, or a future regional endpoint — without
-    waiting on the full ``wt/deep-profile-dispatch`` migration the
-    `wt/profile-cleanup` design doc flags as a follow-up.
-
-    Resolution order matches the rest of ``aitap.deep``:
-
-    1. ``ANTHROPIC_BASE_URL`` env var if non-empty (after ``.strip()``);
-    2. otherwise ``AnthropicClient``'s default
-       (``https://api.anthropic.com``) preserves byte-for-byte
-       behaviour for every existing caller that never set the var.
-
-    Whitespace-only env values (``""``, ``"   "``, ``"\\t\\n"``) are
-    treated as unset so a copy-paste accident doesn't silently break
-    the legacy path. Leading / trailing whitespace around an otherwise
-    valid URL is also stripped (URLs don't contain whitespace per
-    RFC 3986, so stripping is safe).
-
-    The new profile-keyed path (``get_client_for_profile``) is the
-    long-term answer; this hook keeps the legacy path useful in the
-    meantime. We deliberately do NOT consult the env var inside
-    :class:`AnthropicClient` itself — direct constructor callers and
-    the profile factory both pass ``base_url`` explicitly, and an
-    inner override would silently shadow their choice.
-
-    Interaction with the Anthropic SDK's own env var
-    ------------------------------------------------
-
-    The Anthropic Python SDK *also* reads ``ANTHROPIC_BASE_URL`` from
-    the environment (see ``anthropic._client``: when its constructor
-    receives ``base_url=None`` it falls back to ``os.environ.get``).
-    Because :class:`AnthropicClient` always forwards a non-``None``
-    ``base_url`` to the SDK (its constructor default is the canonical
-    Anthropic hostname, never ``None``), the SDK's own env-var read is
-    permanently shadowed — **aitap is the sole interpreter of
-    ``ANTHROPIC_BASE_URL``**.
-
-    This is intentional, not an oversight. A single owner of the
-    env-var contract means the profile path stays predictable: a
-    ``Profile`` configured with ``base_url=A`` always hits A, even
-    when the user has ``ANTHROPIC_BASE_URL=B`` exported for some
-    other tool's benefit. The cost is that users who already learned
-    the SDK's behaviour see ``ANTHROPIC_BASE_URL`` work *only* on
-    aitap's legacy factory path (this function), not on a direct
-    ``AnthropicClient(...)`` construction in code. The CHANGELOG and
-    PR #58 description spell that out for downstream users.
-
-    If we ever want the env var to behave SDK-style on direct
-    construction too, the right move is a separate aitap-namespaced
-    ``AITAP_ANTHROPIC_BASE_URL`` variable so the two contracts don't
-    overlap; this PR keeps the SDK name to minimise the
-    learning-curve barrier for the immediate DeepSeek workflow.
-    """
-    env_base = os.environ.get("ANTHROPIC_BASE_URL", "").strip()
-    if env_base:
-        return AnthropicClient(model, key, base_url=env_base)
-    return AnthropicClient(model, key)
-
-
-register_provider("anthropic", anthropic_factory)
+# A2-P3 (contract v4) removed the legacy provider-keyed registry path:
+# ``anthropic_factory`` + ``register_provider("anthropic", ...)`` and
+# the ``ANTHROPIC_BASE_URL`` env-var hook are gone. The same routing
+# story is now expressed as a Profile (``base_url`` is a regular
+# profile field) — users configure an Anthropic-protocol-compatible
+# gateway by adding a profile with the right ``base_url`` in Settings.
+# Direct ``AnthropicClient(...)`` callers (the profile factory in
+# :mod:`aitap.deep.factory`) keep working unchanged.
