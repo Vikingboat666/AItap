@@ -155,7 +155,13 @@ def build_pipelines_from_edges(
     pipelines: list[Pipeline] = []
     for root_id, comp_edges in components.items():
         node_ids = sorted({e.source for e in comp_edges} | {e.target for e in comp_edges})
-        nodes = [PipelineNode(prompt_id=nid) for nid in node_ids]
+        nodes = [
+            PipelineNode(
+                prompt_id=nid,
+                label=by_id[nid].name if nid in by_id else None,
+            )
+            for nid in node_ids
+        ]
 
         incoming = {e.target for e in comp_edges}
         outgoing = {e.source for e in comp_edges}
