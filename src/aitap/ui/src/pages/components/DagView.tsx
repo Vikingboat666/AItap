@@ -55,6 +55,10 @@ function styleForKind(kind: EdgeKind): {
       // render as solid with a distinct hue so they're visually
       // separable from the variable/function edges.
       return { stroke: "#7c3aed", animated: false };
+    case "crewai":
+      // CrewAI task ordering — matched to the green declared_llm
+      // node treatment so a CrewAI graph reads as one colour unit.
+      return { stroke: "#16a34a", animated: false };
     case "llamaindex":
     case "unresolved":
     default:
@@ -153,13 +157,22 @@ export function DagView({
         const summary = siteIndex[n.prompt_id];
         const selected = selectedSet.has(n.prompt_id);
         const isNonLlm = n.kind === "non_llm";
+        const isDeclaredLlm = n.kind === "declared_llm";
         // ``selected`` overrides the kind-based border treatment so a
         // user-picked node always looks picked. Non-LLM nodes that
         // aren't selected get a dashed border + lower opacity so the
         // user can tell which steps don't actually cost tokens.
-        const baseBorderStyle = isNonLlm
-          ? "1px dashed #b9c1cf"
-          : "1px solid #dde1e9";
+        // ``declared_llm`` (CrewAI Task etc.) gets a solid green
+        // border at full opacity — they DO cost tokens, the prompt
+        // just lives inside the framework rather than in user code.
+        let baseBorderStyle: string;
+        if (isNonLlm) {
+          baseBorderStyle = "1px dashed #b9c1cf";
+        } else if (isDeclaredLlm) {
+          baseBorderStyle = "1px solid #16a34a";
+        } else {
+          baseBorderStyle = "1px solid #dde1e9";
+        }
         return {
           id: n.prompt_id,
           position: positions[n.prompt_id] ?? { x: 0, y: 0 },

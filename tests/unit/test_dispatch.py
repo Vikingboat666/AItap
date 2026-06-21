@@ -737,7 +737,10 @@ def test_invoke_run_rejects_langgraph_pipeline_with_non_llm_step(
         target_id=pipeline.id,
         cases=[DatasetCase(inputs={"value": "seed"})],
     )
-    with pytest.raises(dispatch.ProfileDispatchError, match="non-LLM steps"):
+    # B2-CrewAI broadened the guard from "non-LLM steps" to "framework
+    # pipeline has steps" so the same path catches both LangGraph
+    # non_llm nodes and CrewAI declared_llm tasks.
+    with pytest.raises(dispatch.ProfileDispatchError, match="framework pipeline"):
         dispatch.invoke_run(settings=project, run_id=run_id, payload=payload)
 
     # The named step appears in the error so the user knows which
@@ -747,3 +750,68 @@ def test_invoke_run_rejects_langgraph_pipeline_with_non_llm_step(
     except dispatch.ProfileDispatchError as exc:
         assert "parse" in str(exc)
         assert "View the DAG" in str(exc)
+
+
+def test_invoke_run_rejects_crewai_pipeline_with_declared_llm_step(
+    project: Settings,
+    mock_client_factory: MockLLMClient,
+) -> None:
+    """CrewAI pipelines emit ``kind="declared_llm"`` nodes — real LLM
+    calls whose prompt lives inside the CrewAI framework. The
+    playground runner can't drive those (CrewAI's runtime owns
+    execution), so dispatch should reject them with the same
+    framework-pipeline error message it uses for LangGraph non_llm
+    nodes. Regression added with B2-CrewAI.
+    """
+    _ = mock_client_factory  # seam installed; not exercised on failure path
+    upstream = _prompt_site("p-up")
+    _seed_prompt_row(project, upstream)
+    pipeline = Pipeline(
+        id="pipe-crewai",
+        name="crewai:crew",
+        nodes=[
+            PipelineNode(
+                prompt_id="crewai:app.py:crew:research",
+                label="Research X (Researcher)",
+                kind="declared_llm",
+            ),
+            PipelineNode(
+                prompt_id="crewai:app.py:crew:write",
+                label="Write blog post (Writer)",
+                kind="declared_llm",
+            ),
+        ],
+        edges=[
+            PipelineEdge(
+                source="crewai:app.py:crew:research",
+                target="crewai:app.py:crew:write",
+                kind=_EdgeKind.CREWAI,
+                via="app.py::Crew(crew)",
+            ),
+        ],
+        entry_points=["crewai:app.py:crew:research"],
+        exit_points=["crewai:app.py:crew:write"],
+    )
+    _seed_pipeline_row(project, pipeline)
+    run_id = "test-run-crewai-declared"
+    conn = _open_conn(project)
+    try:
+        runs_dao.insert_run(
+            conn,
+            run_id=run_id,
+            target_kind="pipeline",
+            target_id=pipeline.id,
+            target_version=1,
+            profile_id="prof-mock",
+            parameters_json="{}",
+        )
+    finally:
+        conn.close()
+
+    payload = _build_payload(
+        target_kind="pipeline",
+        target_id=pipeline.id,
+        cases=[DatasetCase(inputs={"value": "seed"})],
+    )
+    with pytest.raises(dispatch.ProfileDispatchError, match="framework pipeline"):
+        dispatch.invoke_run(settings=project, run_id=run_id, payload=payload)

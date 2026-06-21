@@ -284,22 +284,24 @@ def _dispatch(
 
     if payload.target_kind == "pipeline":
         pipeline = _load_pipeline(conn, payload.target_id)
-        # LangGraph-detected pipelines may contain ``kind="non_llm"``
-        # nodes — DAG steps the framework declared but that don't
-        # call an LLM (``add_node("parse", parse_json)``). The current
-        # pipeline runner assumes every node maps to a PromptSite, so
-        # running such a pipeline would crash with ``site_index is
-        # missing PromptSite for node 'langgraph:...'`` deep in
-        # ``_run_single_case_segment``. Reject with a plain-language
-        # message at dispatch time — the runner gap is queued as a
-        # follow-up worktree (CHANGELOG flags it). CLAUDE.md plain-
-        # language: name the cause + the next action.
-        non_llm_steps = [n for n in pipeline.nodes if n.kind == "non_llm"]
-        if non_llm_steps:
-            step_names = ", ".join(sorted({n.label or n.prompt_id for n in non_llm_steps}))
+        # Framework-declared pipelines (LangGraph add_node helpers,
+        # CrewAI Task topology) contain nodes whose prompt either
+        # isn't an LLM call at all (``kind="non_llm"``) or lives
+        # inside the framework rather than in scannable user code
+        # (``kind="declared_llm"``). Either way the pipeline runner
+        # would crash on ``_site_for(node_id, site_index)`` because
+        # the synthetic ``langgraph:...`` / ``crewai:...`` ids have
+        # no backing PromptSite. Reject with a plain-language message
+        # at dispatch time — the runner gap is queued as follow-up
+        # worktrees (CHANGELOG flags them). CLAUDE.md plain-language:
+        # name the cause + the next action.
+        unrunnable_steps = [n for n in pipeline.nodes if n.kind in ("non_llm", "declared_llm")]
+        if unrunnable_steps:
+            step_names = ", ".join(sorted({n.label or n.prompt_id for n in unrunnable_steps}))
             raise ProfileDispatchError(
-                f"This LangGraph pipeline has non-LLM steps ({step_names}) "
-                "that the Playground can't run yet. View the DAG to inspect "
+                f"This framework pipeline has steps ({step_names}) the "
+                "Playground can't run yet — they're declared by the "
+                "framework (LangGraph / CrewAI). View the DAG to inspect "
                 "the topology, then run prompts individually."
             )
         site_index = _load_site_index_for_pipeline(conn, pipeline)
