@@ -133,17 +133,27 @@ class EdgeKind(str, Enum):
     VARIABLE = "variable"  # x = call_a(); call_b(x)
     LANGCHAIN_PIPE = "lc_pipe"  # prompt | model | parser
     LLAMAINDEX = "llamaindex"  # query engine chain
+    LANGGRAPH = "langgraph"  # StateGraph.add_node / add_edge / add_conditional_edges
     FUNCTION = "function"  # f() returns; g(f())
     UNRESOLVED = "unresolved"  # detected but not confirmed (dashed in UI)
 
 
 class PipelineNode(BaseModel):
-    """A node in the pipeline DAG, referencing a PromptSite by id."""
+    """A node in the pipeline DAG, referencing a PromptSite by id.
+
+    ``kind`` distinguishes LLM call sites from helper steps the DAG
+    declares but that don't themselves invoke an LLM (LangGraph's
+    ``add_node("parse", parse_json)`` shape). Default ``"llm"`` keeps
+    every pre-LangGraph fixture unchanged; ``"non_llm"`` lets the UI
+    render the node distinctly (dashed border / dimmer color) so a
+    user reading the DAG can tell which steps actually cost tokens.
+    """
 
     model_config = ConfigDict(frozen=True)
 
     prompt_id: str
     label: str | None = None  # optional display override
+    kind: Literal["llm", "non_llm"] = "llm"
 
 
 class PipelineEdge(BaseModel):
