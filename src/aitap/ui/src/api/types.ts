@@ -36,8 +36,11 @@ export type EdgeKind =
   | "variable"
   | "lc_pipe"
   | "llamaindex"
+  | "langgraph"
   | "function"
   | "unresolved";
+
+export type PipelineNodeKind = "llm" | "non_llm";
 
 // ---------- scanner models ----------
 
@@ -85,6 +88,12 @@ export interface PromptSite {
 export interface PipelineNode {
   prompt_id: string;
   label?: string | null;
+  // 'non_llm' marks DAG steps the framework declared but that don't
+  // themselves call an LLM (LangGraph's add_node('parse', parse_json)
+  // shape). DagView renders them dashed + dim so the user can tell
+  // which steps actually cost tokens. Defaults to 'llm' for backward
+  // compat with every pre-LangGraph fixture.
+  kind?: PipelineNodeKind;
 }
 
 export interface PipelineEdge {

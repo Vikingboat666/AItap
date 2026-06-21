@@ -48,6 +48,34 @@ class DataflowDetector(Protocol):
     ) -> list[PipelineEdge]: ...
 
 
+class ProjectPipelineDetector(Protocol):
+    """A project-level detector that emits complete :class:`Pipeline`
+    objects directly, not edges over the PromptSite id namespace.
+
+    Used when the detector needs to describe DAG topology that includes
+    nodes without a backing :class:`PromptSite` — e.g. LangGraph's
+    ``add_node("parse", parse_json)`` where ``parse_json`` is a
+    pure-Python helper with no LLM call. Those nodes get
+    :attr:`PipelineNode.kind` ``= "non_llm"`` so the UI can render them
+    distinctly while preserving the DAG's topology.
+
+    The rest of the dataflow detectors return ``list[PipelineEdge]``
+    that flows through :func:`build_pipelines_from_edges`'s union-find
+    pass; project-level detectors bypass that pass because their nodes
+    aren't strictly LLM sites and union-finding them by PromptSite id
+    would silently drop the non-LLM nodes.
+    """
+
+    name: str
+
+    def detect_pipelines(
+        self,
+        files: list[Path],
+        project_root: Path,
+        sites: list[PromptSite],
+    ) -> list[Pipeline]: ...
+
+
 # --------------------------------------------------------------------------- #
 # Site lookup helpers — detectors share the same "is this AST node a known    #
 # prompt site?" question, so we centralise the answer.                        #

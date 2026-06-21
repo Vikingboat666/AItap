@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 
 from .base import (
     DataflowDetector,
+    ProjectPipelineDetector,
     build_pipelines_from_edges,
     dedupe_edges,
 )
@@ -35,6 +36,7 @@ from .cross_file_orchestration import CrossFileOrchestration
 from .intra_class_method_chain import IntraClassMethodChain
 from .intra_file_chain import IntraFileChain
 from .langchain_pipe import LangChainPipe
+from .langgraph import LangGraphDetector
 from .llamaindex_engine import LlamaIndexEngine
 from .variable_tracker import VariableTracker
 
@@ -47,12 +49,15 @@ __all__ = [
     "IntraClassMethodChain",
     "IntraFileChain",
     "LangChainPipe",
+    "LangGraphDetector",
     "LlamaIndexEngine",
+    "ProjectPipelineDetector",
     "VariableTracker",
     "build_pipelines_from_edges",
     "dedupe_edges",
     "default_cross_file_detectors",
     "default_detectors",
+    "default_project_pipeline_detectors",
     "detect_pipelines",
 ]
 
@@ -85,6 +90,20 @@ def default_cross_file_detectors() -> list[CrossFileOrchestration]:
     return [CrossFileOrchestration()]
 
 
+def default_project_pipeline_detectors() -> list[ProjectPipelineDetector]:
+    """Project-level detectors that emit complete Pipeline objects
+    directly (not edges over the PromptSite id namespace).
+
+    Used when the detector needs to describe DAG topology that
+    includes non-LLM nodes — the LangGraph rule (B2-LG, PR #74) is
+    the only entry so far. Adjacent OSS for context: ``agentic-radar``
+    (979★) does a similar static walk over ``StateGraph.add_node`` /
+    ``add_edge`` but doesn't resolve callees back to PromptSites the
+    way we do.
+    """
+    return [LangGraphDetector()]
+
+
 def detect_pipelines(
     files: list[Path],
     project_root: Path,
@@ -92,6 +111,7 @@ def detect_pipelines(
     *,
     detectors: list[DataflowDetector] | None = None,
     cross_file_detectors: list[CrossFileOrchestration] | None = None,
+    project_pipeline_detectors: list[ProjectPipelineDetector] | None = None,
 ) -> list[Pipeline]:
     """Detect data-flow Pipelines across *files* given the already-extracted *sites*.
 
@@ -115,6 +135,11 @@ def detect_pipelines(
     detectors = detectors or default_detectors()
     cross_file_detectors = (
         cross_file_detectors if cross_file_detectors is not None else default_cross_file_detectors()
+    )
+    project_pipeline_detectors = (
+        project_pipeline_detectors
+        if project_pipeline_detectors is not None
+        else default_project_pipeline_detectors()
     )
     sites_by_file = _group_sites_by_file(sites)
 
@@ -150,7 +175,20 @@ def detect_pipelines(
             continue
         all_edges.extend(cross_edges)
 
-    return build_pipelines_from_edges(dedupe_edges(all_edges), sites)
+    edge_pipelines = build_pipelines_from_edges(dedupe_edges(all_edges), sites)
+
+    # Project-level pipeline detectors emit complete Pipeline objects
+    # (LangGraph etc.). We append them after the edge-based pipelines
+    # — a future dedup pass could collapse overlapping topologies, but
+    # for now we let both views co-exist so the user sees them both.
+    project_pipelines: list[Pipeline] = []
+    for proj_detector in project_pipeline_detectors:
+        try:
+            project_pipelines.extend(proj_detector.detect_pipelines(files, project_root, sites))
+        except Exception:
+            continue
+
+    return edge_pipelines + project_pipelines
 
 
 def _group_sites_by_file(sites: list[PromptSite]) -> dict[str, list[PromptSite]]:
