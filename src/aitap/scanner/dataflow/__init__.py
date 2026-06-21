@@ -32,6 +32,7 @@ from .base import (
     build_pipelines_from_edges,
     dedupe_edges,
 )
+from .crewai import CrewAIDetector
 from .cross_file_orchestration import CrossFileOrchestration
 from .intra_class_method_chain import IntraClassMethodChain
 from .intra_file_chain import IntraFileChain
@@ -44,6 +45,7 @@ if TYPE_CHECKING:
     from aitap.scanner.models import Pipeline, PipelineEdge, PromptSite
 
 __all__ = [
+    "CrewAIDetector",
     "CrossFileOrchestration",
     "DataflowDetector",
     "IntraClassMethodChain",
@@ -95,13 +97,14 @@ def default_project_pipeline_detectors() -> list[ProjectPipelineDetector]:
     directly (not edges over the PromptSite id namespace).
 
     Used when the detector needs to describe DAG topology that
-    includes non-LLM nodes — the LangGraph rule (B2-LG, PR #74) is
-    the only entry so far. Adjacent OSS for context: ``agentic-radar``
-    (979★) does a similar static walk over ``StateGraph.add_node`` /
-    ``add_edge`` but doesn't resolve callees back to PromptSites the
-    way we do.
+    includes nodes the user's code doesn't directly express as
+    PromptSites — LangGraph's framework-declared DAG (PR #74) and
+    CrewAI's Task/Crew topology (B2-CrewAI). Adjacent OSS:
+    ``agentic-radar`` (979★) covers the same frameworks but doesn't
+    classify nodes by LLM-bearing kind the way aitap's
+    ``PipelineNode.kind`` does (llm / non_llm / declared_llm).
     """
-    return [LangGraphDetector()]
+    return [LangGraphDetector(), CrewAIDetector()]
 
 
 def detect_pipelines(
