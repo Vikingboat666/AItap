@@ -37,10 +37,11 @@ export type EdgeKind =
   | "lc_pipe"
   | "llamaindex"
   | "langgraph"
+  | "crewai"
   | "function"
   | "unresolved";
 
-export type PipelineNodeKind = "llm" | "non_llm";
+export type PipelineNodeKind = "llm" | "non_llm" | "declared_llm";
 
 // ---------- scanner models ----------
 

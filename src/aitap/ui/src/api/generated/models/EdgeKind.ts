@@ -5,4 +5,4 @@
 /**
  * What kind of data dependency this edge represents.
  */
-export type EdgeKind = 'variable' | 'lc_pipe' | 'llamaindex' | 'langgraph' | 'function' | 'unresolved';
+export type EdgeKind = 'variable' | 'lc_pipe' | 'llamaindex' | 'langgraph' | 'crewai' | 'function' | 'unresolved';
