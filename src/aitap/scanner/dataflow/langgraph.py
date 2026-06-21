@@ -61,7 +61,6 @@ from __future__ import annotations
 
 import ast
 import hashlib
-from itertools import pairwise  # noqa: F401  (reserved for future use)
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -431,8 +430,6 @@ def _parse_add_conditional_edges(call: ast.Call) -> list[tuple[str, str]]:
         return []
     out: list[tuple[str, str]] = []
     for value in mapping.values:
-        if value is None:
-            continue
         tgt = _node_name_expr(value)
         if tgt is None:
             continue
@@ -581,6 +578,18 @@ def _materialise_pipeline(
         referenced.add(e.target)
     nodes = [n for n in nodes if n.prompt_id in referenced]
 
+    # Compute entry/exit point ids the same way ``build_pipelines_from_edges``
+    # does — nodes with no incoming edge are entries, no outgoing edge are
+    # exits. Without these the pipelines route layer surfaces
+    # ``entry_count = 0`` for every LangGraph pipeline and the playground
+    # runner falls back to its segment-mode inference (wrong semantics for
+    # end_to_end). Tech-review fix for the initial commit of PR #74.
+    node_ids = [n.prompt_id for n in nodes]
+    incoming_ids = {e.target for e in edges}
+    outgoing_ids = {e.source for e in edges}
+    entry_points = sorted(nid for nid in node_ids if nid not in incoming_ids)
+    exit_points = sorted(nid for nid in node_ids if nid not in outgoing_ids)
+
     pipeline_id = _stable_pipeline_id(file_relpath, var_name)
     pipeline_name = f"langgraph:{var_name}"
     return Pipeline(
@@ -588,6 +597,8 @@ def _materialise_pipeline(
         name=pipeline_name,
         nodes=nodes,
         edges=edges,
+        entry_points=entry_points,
+        exit_points=exit_points,
     )
 
 

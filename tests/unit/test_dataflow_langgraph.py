@@ -479,6 +479,109 @@ def test_langgraph_aliased_import_still_recognised(
 # --------------------------------------------------------------------------- #
 
 
+# --------------------------------------------------------------------------- #
+# Tech-review regressions (PR #74 Opus 4.7 initial-commit review)             #
+# --------------------------------------------------------------------------- #
+
+
+def test_langgraph_pipeline_populates_entry_and_exit_points(
+    project_root: Path,
+) -> None:
+    """Regression: ``Pipeline.entry_points`` / ``exit_points`` must
+    be populated. Pre-fix the LangGraph detector returned them as
+    empty lists, which would have:
+
+    (a) surfaced ``entry_count=0`` for every LangGraph pipeline in
+        ``GET /api/pipelines`` (the pipelines route reads
+        ``len(pipeline.entry_points)`` for its summary projection),
+        and
+    (b) flipped the playground runner's ``end_to_end`` mode into its
+        segment-mode entry inference (wrong semantics).
+    """
+    _write(
+        project_root,
+        "app/agent.py",
+        """
+        from langgraph.graph import StateGraph
+
+        async def step_a(state):
+            return await openai.complete(
+                messages=[{"role": "user", "content": "A."}],
+            )
+
+        async def step_b(state):
+            return await openai.complete(
+                messages=[{"role": "user", "content": "B."}],
+            )
+
+        async def step_c(state):
+            return await openai.complete(
+                messages=[{"role": "user", "content": "C."}],
+            )
+
+        def build_graph():
+            g = StateGraph(dict)
+            g.add_node("a", step_a)
+            g.add_node("b", step_b)
+            g.add_node("c", step_c)
+            g.add_edge("a", "b")
+            g.add_edge("b", "c")
+            return g.compile()
+        """,
+    )
+    result = _scan(project_root)
+    lg_pipelines = _langgraph_pipelines(result)
+    assert len(lg_pipelines) == 1
+    pipeline = lg_pipelines[0]
+    # a has no incoming edge → entry; c has no outgoing edge → exit.
+    assert len(pipeline.entry_points) == 1
+    assert len(pipeline.exit_points) == 1
+    # All node ids participate in some edge → entry and exit are each
+    # exactly one node; the middle one is in neither set. Find the
+    # middle by exclusion (the one in neither entry nor exit).
+    all_ids = {n.prompt_id for n in pipeline.nodes}
+    middle_ids = all_ids - set(pipeline.entry_points) - set(pipeline.exit_points)
+    assert len(middle_ids) == 1
+
+
+def test_message_graph_alias_path_still_recognised(
+    project_root: Path,
+) -> None:
+    """``MessageGraph`` is the deprecated-but-still-in-the-wild
+    variant of ``StateGraph`` — same API shape. The detector lists it
+    in ``_LANGGRAPH_GRAPH_CLASSES`` but the initial commit had no
+    test exercising it; a one-line typo would silently regress the
+    path. Regression test added on Opus review.
+    """
+    _write(
+        project_root,
+        "app/message_agent.py",
+        """
+        from langgraph.graph import MessageGraph
+
+        async def step_a(state):
+            return await openai.complete(
+                messages=[{"role": "user", "content": "A."}],
+            )
+
+        async def step_b(state):
+            return await openai.complete(
+                messages=[{"role": "user", "content": "B."}],
+            )
+
+        def build_graph():
+            g = MessageGraph()
+            g.add_node("a", step_a)
+            g.add_node("b", step_b)
+            g.add_edge("a", "b")
+            return g.compile()
+        """,
+    )
+    result = _scan(project_root)
+    lg_pipelines = _langgraph_pipelines(result)
+    assert len(lg_pipelines) == 1
+
+
 def test_detector_returns_empty_list_when_no_state_graph_in_project(
     project_root: Path,
 ) -> None:

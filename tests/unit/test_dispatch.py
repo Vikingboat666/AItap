@@ -671,3 +671,79 @@ def test_outputs_sidecar_path_layout(tmp_path: Path) -> None:
     assert path.name == "outputs.jsonl"
     assert path.parent.name == "run-123"
     assert path.parent.parent == settings.runs_dir
+
+
+# ---------------------------------------------------------------------------
+# LangGraph pipeline guard (B2-LG tech-review #1)                              #
+# ---------------------------------------------------------------------------
+
+
+def test_invoke_run_rejects_langgraph_pipeline_with_non_llm_step(
+    project: Settings,
+    mock_client_factory: MockLLMClient,
+) -> None:
+    """A LangGraph pipeline that contains a ``kind="non_llm"`` node
+    can't be run through the current ``pipeline_runner`` — every
+    node-walk hits ``_site_for(node_id, site_index)`` and the
+    synthetic ``langgraph:...`` id has no PromptSite. Rather than
+    crash deep in the runner with an internal-shaped KeyError, the
+    dispatch layer raises ``ProfileDispatchError`` with a plain-
+    language message at load time. Regression test added on Opus
+    tech-review of the initial PR #74 commit.
+    """
+    _ = mock_client_factory  # seam installed; not exercised on the failure path
+    upstream = _prompt_site("p-up")
+    _seed_prompt_row(project, upstream)
+    pipeline = Pipeline(
+        id="pipe-lg-mixed",
+        name="langgraph:g",
+        nodes=[
+            PipelineNode(prompt_id=upstream.id, kind="llm"),
+            PipelineNode(
+                prompt_id="langgraph:app.py:g:parse",
+                label="parse",
+                kind="non_llm",
+            ),
+        ],
+        edges=[
+            PipelineEdge(
+                source=upstream.id,
+                target="langgraph:app.py:g:parse",
+                kind=_EdgeKind.LANGGRAPH,
+                via="app.py::StateGraph(g)",
+            ),
+        ],
+        entry_points=[upstream.id],
+        exit_points=["langgraph:app.py:g:parse"],
+    )
+    _seed_pipeline_row(project, pipeline)
+    run_id = "test-run-lg-nonllm"
+    conn = _open_conn(project)
+    try:
+        runs_dao.insert_run(
+            conn,
+            run_id=run_id,
+            target_kind="pipeline",
+            target_id=pipeline.id,
+            target_version=1,
+            profile_id="prof-mock",
+            parameters_json="{}",
+        )
+    finally:
+        conn.close()
+
+    payload = _build_payload(
+        target_kind="pipeline",
+        target_id=pipeline.id,
+        cases=[DatasetCase(inputs={"value": "seed"})],
+    )
+    with pytest.raises(dispatch.ProfileDispatchError, match="non-LLM steps"):
+        dispatch.invoke_run(settings=project, run_id=run_id, payload=payload)
+
+    # The named step appears in the error so the user knows which
+    # node blocked the run.
+    try:
+        dispatch.invoke_run(settings=project, run_id=run_id, payload=payload)
+    except dispatch.ProfileDispatchError as exc:
+        assert "parse" in str(exc)
+        assert "View the DAG" in str(exc)
