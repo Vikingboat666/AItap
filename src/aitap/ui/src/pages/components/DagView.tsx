@@ -50,6 +50,11 @@ function styleForKind(kind: EdgeKind): {
     case "lc_pipe":
     case "function":
       return { stroke: "#475dff", animated: false };
+    case "langgraph":
+      // LangGraph declarations are explicit DAG, not heuristics —
+      // render as solid with a distinct hue so they're visually
+      // separable from the variable/function edges.
+      return { stroke: "#7c3aed", animated: false };
     case "llamaindex":
     case "unresolved":
     default:
@@ -147,20 +152,31 @@ export function DagView({
       pipeline.nodes.map((n) => {
         const summary = siteIndex[n.prompt_id];
         const selected = selectedSet.has(n.prompt_id);
+        const isNonLlm = n.kind === "non_llm";
+        // ``selected`` overrides the kind-based border treatment so a
+        // user-picked node always looks picked. Non-LLM nodes that
+        // aren't selected get a dashed border + lower opacity so the
+        // user can tell which steps don't actually cost tokens.
+        const baseBorderStyle = isNonLlm
+          ? "1px dashed #b9c1cf"
+          : "1px solid #dde1e9";
         return {
           id: n.prompt_id,
           position: positions[n.prompt_id] ?? { x: 0, y: 0 },
           // `selected` rides in `data` (not just `style`) so the flag is
           // assertable in tests and stays the single source of the
-          // highlight below.
-          data: { label: makeLabel(n, summary), summary, selected },
+          // highlight below. ``kind`` rides here too so the
+          // ``DagView.nodekind`` tests can assert it without re-reading
+          // pipeline.nodes.
+          data: { label: makeLabel(n, summary), summary, selected, kind: n.kind ?? "llm" },
           type: "default",
           style: {
             width: NODE_WIDTH,
             padding: 10,
             borderRadius: 8,
-            border: selected ? "2px solid #475dff" : "1px solid #dde1e9",
+            border: selected ? "2px solid #475dff" : baseBorderStyle,
             background: selected ? "#eef1ff" : "#ffffff",
+            opacity: isNonLlm && !selected ? 0.65 : 1,
             fontSize: 12,
             fontFamily: "inherit",
           },
