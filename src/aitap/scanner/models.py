@@ -134,6 +134,7 @@ class EdgeKind(str, Enum):
     LANGCHAIN_PIPE = "lc_pipe"  # prompt | model | parser
     LLAMAINDEX = "llamaindex"  # query engine chain
     LANGGRAPH = "langgraph"  # StateGraph.add_node / add_edge / add_conditional_edges
+    CREWAI = "crewai"  # Task(context=[…]) deps + Crew(tasks=[…]) ordering
     FUNCTION = "function"  # f() returns; g(f())
     UNRESOLVED = "unresolved"  # detected but not confirmed (dashed in UI)
 
@@ -141,19 +142,31 @@ class EdgeKind(str, Enum):
 class PipelineNode(BaseModel):
     """A node in the pipeline DAG, referencing a PromptSite by id.
 
-    ``kind`` distinguishes LLM call sites from helper steps the DAG
-    declares but that don't themselves invoke an LLM (LangGraph's
-    ``add_node("parse", parse_json)`` shape). Default ``"llm"`` keeps
-    every pre-LangGraph fixture unchanged; ``"non_llm"`` lets the UI
-    render the node distinctly (dashed border / dimmer color) so a
-    user reading the DAG can tell which steps actually cost tokens.
+    ``kind`` distinguishes three flavours of DAG step the UI renders
+    distinctly:
+
+    - ``"llm"`` (default) — a real LLM call site backed by a concrete
+      :class:`PromptSite` in the user's code. Solid blue border.
+    - ``"non_llm"`` — a step the framework declared but that doesn't
+      itself invoke an LLM (LangGraph's ``add_node("parse",
+      parse_json)`` shape). Dashed grey border + dim opacity so users
+      can see at a glance that it doesn't cost tokens.
+    - ``"declared_llm"`` — a real LLM call whose prompt lives **inside
+      the framework**, not in code we can scan (CrewAI's ``Task(
+      description="…", agent=researcher)`` — runtime composes the
+      prompt from the agent's role/goal/backstory + the task
+      description). Solid green border. Distinct from ``"llm"``
+      because we can't link it to a PromptSite, and distinct from
+      ``"non_llm"`` because it *does* cost tokens. The playground
+      runner rejects these the same way it rejects ``non_llm``
+      (CrewAI runtime owns execution, aitap can't drive it).
     """
 
     model_config = ConfigDict(frozen=True)
 
     prompt_id: str
     label: str | None = None  # optional display override
-    kind: Literal["llm", "non_llm"] = "llm"
+    kind: Literal["llm", "non_llm", "declared_llm"] = "llm"
 
 
 class PipelineEdge(BaseModel):
